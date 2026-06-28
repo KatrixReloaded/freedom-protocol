@@ -4,8 +4,8 @@ pragma solidity ^0.8.24;
 abstract contract OptionTokenBase {
     address public immutable factory;
     uint256 public immutable strike;
-    uint64  public immutable maturity;
-    bool    public immutable isStable;
+    uint64 public immutable maturity;
+    bool public immutable isStable;
 
     mapping(address => bool) public authorized;
 
@@ -17,8 +17,8 @@ abstract contract OptionTokenBase {
     }
 
     constructor(address factory_, uint256 strike_, uint64 maturity_, bool isStable_) {
-        factory  = factory_;
-        strike   = strike_;
+        factory = factory_;
+        strike = strike_;
         maturity = maturity_;
         isStable = isStable_;
     }

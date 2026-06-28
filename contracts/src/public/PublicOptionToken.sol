@@ -12,12 +12,11 @@ contract PublicOptionToken is ERC20, OptionTokenBase {
         uint256 strike_,
         uint64 maturity_,
         bool isStable_
-    )
-        ERC20(name_, symbol_)
-        OptionTokenBase(factory_, strike_, maturity_, isStable_)
-    {}
+    ) ERC20(name_, symbol_) OptionTokenBase(factory_, strike_, maturity_, isStable_) {}
 
-    function decimals() public pure override returns (uint8) { return 6; }
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
 
     function mint(address to, uint256 amount) external onlyAuthorized {
         _mint(to, amount);

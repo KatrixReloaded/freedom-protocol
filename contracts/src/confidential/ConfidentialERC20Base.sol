@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
+import {ZamaConfig} from "fhevm/config/ZamaConfig.sol";
 
 /// @notice Abstract base for confidential ERC-20 tokens backed by fhEVM.
 /// @dev Balances and allowances are stored as encrypted handles (euint64).
@@ -9,7 +10,7 @@ abstract contract ConfidentialERC20Base {
     event Transfer(address indexed from, address indexed to);
     event Approval(address indexed owner, address indexed spender);
 
-    uint64 internal _totalSupply;
+    euint64 internal _totalSupply;
     string internal _name;
     string internal _symbol;
 
@@ -17,14 +18,28 @@ abstract contract ConfidentialERC20Base {
     mapping(address => mapping(address => euint64)) internal _allowances;
 
     constructor(string memory name_, string memory symbol_) {
+        FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
         _name = name_;
         _symbol = symbol_;
+        _totalSupply = FHE.asEuint64(0);
+        FHE.allowThis(_totalSupply);
     }
 
-    function name() public view returns (string memory) { return _name; }
-    function symbol() public view returns (string memory) { return _symbol; }
-    function decimals() public pure returns (uint8) { return 6; }
-    function totalSupply() public view returns (uint64) { return _totalSupply; }
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public pure returns (uint8) {
+        return 6;
+    }
+
+    function totalSupply() public view returns (euint64) {
+        return _totalSupply;
+    }
 
     function balanceOf(address account) public view returns (euint64) {
         return _balances[account];
@@ -46,7 +61,10 @@ abstract contract ConfidentialERC20Base {
         return true;
     }
 
-    function transferFrom(address from, address to, externalEuint64 encAmount, bytes calldata proof) public returns (bool) {
+    function transferFrom(address from, address to, externalEuint64 encAmount, bytes calldata proof)
+        public
+        returns (bool)
+    {
         euint64 amount = FHE.fromExternal(encAmount, proof);
         require(FHE.isSenderAllowed(amount));
         ebool allowed = _updateAllowance(from, msg.sender, amount);
@@ -104,14 +122,24 @@ abstract contract ConfidentialERC20Base {
     }
 
     function _mint(address to, euint64 amount) internal {
+        euint64 newSupply = FHE.add(_totalSupply, amount);
+        _totalSupply = newSupply;
+        FHE.allowThis(newSupply);
+
         euint64 newBal = FHE.add(_balances[to], amount);
         _balances[to] = newBal;
         FHE.allowThis(newBal);
         FHE.allow(newBal, to);
     }
 
-    function _burn(address from, euint64 amount) internal {
-        euint64 newBal = FHE.sub(_balances[from], amount);
+    function _burn(address from, euint64 amount) internal returns (euint64 burnAmount) {
+        burnAmount = FHE.min(amount, _balances[from]);
+
+        euint64 newSupply = FHE.sub(_totalSupply, burnAmount);
+        _totalSupply = newSupply;
+        FHE.allowThis(newSupply);
+
+        euint64 newBal = FHE.sub(_balances[from], burnAmount);
         _balances[from] = newBal;
         FHE.allowThis(newBal);
         FHE.allow(newBal, from);

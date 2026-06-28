@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {FHE, euint64, externalEuint64} from "fhevm/lib/FHE.sol";
+import {FHE, euint64} from "fhevm/lib/FHE.sol";
 import {ConfidentialERC20Base} from "./ConfidentialERC20Base.sol";
 import {OptionTokenBase} from "../base/OptionTokenBase.sol";
 
@@ -15,19 +15,16 @@ contract OptionToken is ConfidentialERC20Base, OptionTokenBase {
         uint256 strike_,
         uint64 maturity_,
         bool isStable_
-    )
-        ConfidentialERC20Base(name_, symbol_)
-        OptionTokenBase(factory_, strike_, maturity_, isStable_)
-    {}
+    ) ConfidentialERC20Base(name_, symbol_) OptionTokenBase(factory_, strike_, maturity_, isStable_) {}
 
     function mint(address to, euint64 amount) external onlyAuthorized {
         _mint(to, amount);
         FHE.allow(amount, msg.sender);
     }
 
-    function burn(address from, euint64 amount) external onlyAuthorized {
-        _burn(from, amount);
-        FHE.allow(amount, msg.sender);
+    function burn(address from, euint64 amount) external onlyAuthorized returns (euint64 burnAmount) {
+        burnAmount = _burn(from, amount);
+        FHE.allow(burnAmount, msg.sender);
     }
 
     /// @notice Pull encrypted tokens from `from` into the caller (factory or pool).

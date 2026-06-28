@@ -17,9 +17,11 @@ contracts/src/
 │   ├── IOptionToken.sol               ← new
 │   └── IOptionFactory.sol             ← new
 ├── public/
+│   ├── CentralCollateralVault.sol     ← new
 │   ├── PublicOptionToken.sol          ← new
 │   └── PublicOptionFactory.sol        ← new
 ├── confidential/
+│   ├── ConfidentialCollateralVault.sol ← new
 │   ├── ConfidentialERC20Base.sol      ← move from src/, no logic changes
 │   ├── OptionToken.sol                ← move from src/, inherit OptionTokenBase
 │   ├── OptionFactory.sol              ← move from src/, inherit OptionFactoryBase, two small additions
@@ -221,6 +223,7 @@ contract OptionFactory is OptionFactoryBase { ... }
 **Update `settle()`** to use `_computePayouts`:
 ```solidity
 function settle(uint256 strike, uint64 maturity, uint256 oraclePrice) external {
+    if (msg.sender != oracle) revert NotOracle();
     bytes32 id = seriesId(strike, maturity);
     Series storage s = series[id];
     if (address(s.stableToken) == address(0)) revert SeriesNotFound();
@@ -323,160 +326,16 @@ contract PublicOptionToken is ERC20, OptionTokenBase {
 
 ## Step 9 — Write `src/public/PublicOptionFactory.sol`
 
-Plaintext mirror of `OptionFactory`. Inherits `OptionFactoryBase` for shared utilities.
+Plaintext mirror of `OptionFactory`. Inherits `OptionFactoryBase` for shared utilities and deploys one `CentralCollateralVault` in the constructor. Use `collateralToken = address(0)` for native ETH, or an ERC-20 token address for WETH-like collateral.
 
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-import {OptionFactoryBase} from "../base/OptionFactoryBase.sol";
-import {PublicOptionToken} from "./PublicOptionToken.sol";
-
-interface IWETH {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-    function transfer(address to, uint256 amount) external returns (bool);
-}
-
-contract PublicOptionFactory is OptionFactoryBase {
-    struct Series {
-        PublicOptionToken stableToken;
-        PublicOptionToken upToken;
-        bool settled;
-        uint256 stablePayout;   // [0, SCALE] plaintext
-        uint256 upPayout;
-    }
-
-    mapping(bytes32 => Series) public series;
-    mapping(bytes32 => uint256) public reserves;
-
-    address public bridge;
-
-    IWETH public immutable WETH;
-
-    event SeriesCreated(uint256 indexed strike, uint64 indexed maturity, address stableToken, address upToken);
-    event Split(address indexed user, bytes32 indexed seriesId, uint256 amount);
-    event Merge(address indexed user, bytes32 indexed seriesId, uint256 amount);
-    event Settled(bytes32 indexed seriesId, uint256 oraclePrice, uint256 stablePayout, uint256 upPayout);
-    event Redeemed(address indexed user, bytes32 indexed seriesId, uint256 claim);
-
-    error SeriesExists();
-    error SeriesNotFound();
-    error AlreadySettled();
-    error NotYetMatured();
-    error NotSettled();
-
-    constructor(address weth_) {
-        WETH = IWETH(weth_);
-    }
-
-    function createSeries(uint256 strike, uint64 maturity) external returns (address stable, address up) {
-        bytes32 id = seriesId(strike, maturity);
-        if (address(series[id].stableToken) != address(0)) revert SeriesExists();
-
-        string memory strikePart = _uint2str(strike);
-        string memory matPart    = _uint2str(maturity);
-
-        PublicOptionToken stableToken = new PublicOptionToken(
-            string(abi.encodePacked("stableETH-", strikePart, "-", matPart)),
-            string(abi.encodePacked("stETH-",     strikePart, "-", matPart)),
-            address(this), strike, maturity, true
-        );
-        PublicOptionToken upToken = new PublicOptionToken(
-            string(abi.encodePacked("upETH-", strikePart, "-", matPart)),
-            string(abi.encodePacked("upETH-", strikePart, "-", matPart)),
-            address(this), strike, maturity, false
-        );
-
-        series[id] = Series({ stableToken: stableToken, upToken: upToken, settled: false, stablePayout: 0, upPayout: 0 });
-        emit SeriesCreated(strike, maturity, address(stableToken), address(upToken));
-        return (address(stableToken), address(upToken));
-    }
-
-    function split(uint256 strike, uint64 maturity, uint256 amount) external {
-        bytes32 id = seriesId(strike, maturity);
-        Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (s.settled) revert AlreadySettled();
-
-        WETH.transferFrom(msg.sender, address(this), amount);
-        reserves[id] += amount;
-        s.stableToken.mint(msg.sender, amount);
-        s.upToken.mint(msg.sender, amount);
-        emit Split(msg.sender, id, amount);
-    }
-
-    function merge(uint256 strike, uint64 maturity, uint256 amount) external {
-        bytes32 id = seriesId(strike, maturity);
-        Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (s.settled) revert AlreadySettled();
-
-        s.stableToken.burn(msg.sender, amount);
-        s.upToken.burn(msg.sender, amount);
-        reserves[id] -= amount;
-        WETH.transfer(msg.sender, amount);
-        emit Merge(msg.sender, id, amount);
-    }
-
-    function settle(uint256 strike, uint64 maturity, uint256 oraclePrice) external {
-        bytes32 id = seriesId(strike, maturity);
-        Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (s.settled) revert AlreadySettled();
-        if (block.timestamp < maturity) revert NotYetMatured();
-
-        (uint64 stablePay, uint64 upPay) = _computePayouts(strike, oraclePrice);
-        s.stablePayout = stablePay;
-        s.upPayout     = upPay;
-        s.settled = true;
-        emit Settled(id, oraclePrice, stablePay, upPay);
-    }
-
-    function redeem(uint256 strike, uint64 maturity) external {
-        bytes32 id = seriesId(strike, maturity);
-        Series storage s = series[id];
-        if (!s.settled) revert NotSettled();
-
-        uint256 stableBal = s.stableToken.balanceOf(msg.sender);
-        uint256 upBal     = s.upToken.balanceOf(msg.sender);
-
-        s.stableToken.burn(msg.sender, stableBal);
-        s.upToken.burn(msg.sender, upBal);
-
-        uint256 claim = (stableBal * s.stablePayout + upBal * s.upPayout) / SCALE;
-        reserves[id] -= claim;
-        WETH.transfer(msg.sender, claim);
-        emit Redeemed(msg.sender, id, claim);
-    }
-
-    // ── Bridge support ─────────────────────────────────────────────────────
-
-    function setBridge(address bridge_) external {
-        require(bridge == address(0), "already set");
-        bridge = bridge_;
-    }
-
-    function authorizeBridge(uint256 strike, uint64 maturity) external {
-        require(msg.sender == bridge, "not bridge");
-        bytes32 id = seriesId(strike, maturity);
-        Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        s.stableToken.setAuthorized(bridge, true);
-        s.upToken.setAuthorized(bridge, true);
-    }
-
-    // ── OptionFactoryBase overrides ────────────────────────────────────────
-
-    function getTokens(uint256 strike, uint64 maturity) external view override returns (address stable, address up) {
-        bytes32 id = seriesId(strike, maturity);
-        return (address(series[id].stableToken), address(series[id].upToken));
-    }
-
-    function isSettled(uint256 strike, uint64 maturity) external view override returns (bool) {
-        return series[seriesId(strike, maturity)].settled;
-    }
-}
-```
+Key implementation points:
+- `split()` deposits native ETH or ERC-20 collateral into `vault.depositReserve(id, msg.sender, amount)` and mints equal P/N.
+- `merge()` burns equal P/N and withdraws from `vault.withdrawReserve(id, msg.sender, amount)`.
+- `redeem()` burns settled P/N and withdraws the computed claim from the vault.
+- `fundBridgeReserve()` deposits collateral into the same vault and increases `bridgeMintable[id]`.
+- `bridgeMint()` mints public P or N only up to funded `bridgeMintable[id]`.
+- `reserves(bytes32)` reads `vault.reserves(id)` for ABI compatibility with the previous public mapping getter.
+- The vault exposes native ETH or ERC-20 collateral flash loans and blocks reserve-changing operations while a flash loan is active.
 
 ---
 
@@ -491,43 +350,123 @@ pragma solidity ^0.8.24;
 import {FHE, euint64} from "fhevm/lib/FHE.sol";
 import {IOptionFactory} from "../interfaces/IOptionFactory.sol";
 import {OptionToken} from "../confidential/OptionToken.sol";
-import {PublicOptionToken} from "../public/PublicOptionToken.sol";
+
+interface IBridgeAuthorizableFactory is IOptionFactory {
+    function authorizeBridge(uint256 strike, uint64 maturity) external;
+}
+
+interface IPublicOptionFactory is IOptionFactory {
+    function bridgeMint(uint256 strike, uint64 maturity, bool isStable, address to, uint256 amount) external;
+}
 
 contract UnshieldBridge {
-    IOptionFactory public immutable confidentialFactory;
-    IOptionFactory public immutable publicFactory;
+    IBridgeAuthorizableFactory public immutable confidentialFactory;
+    IPublicOptionFactory public immutable publicFactory;
 
-    event Unshielded(address indexed user, uint256 indexed strike, uint64 maturity, bool isStable, uint256 amount);
-
-    error SeriesNotFound();
-
-    constructor(address confFactory_, address pubFactory_) {
-        confidentialFactory = IOptionFactory(confFactory_);
-        publicFactory       = IOptionFactory(pubFactory_);
+    struct UnshieldRequest {
+        address user;
+        uint256 strike;
+        uint64 maturity;
+        bool isStable;
+        uint64 requestedAmount;
+        euint64 burnedAmount;
+        bool finalized;
     }
 
-    /// @notice Burns `amount` confidential tokens, mints equal public tokens.
-    ///         Amount is plaintext — user deliberately reveals their position size.
-    function unshield(uint256 strike, uint64 maturity, bool isStable, uint256 amount) external {
+    uint256 public nextRequestId;
+    mapping(uint256 => UnshieldRequest) public requests;
+
+    event UnshieldRequested(
+        uint256 indexed requestId,
+        address indexed user,
+        uint256 indexed strike,
+        uint64 maturity,
+        bool isStable,
+        uint64 requestedAmount,
+        bytes32 burnedAmountHandle
+    );
+    event UnshieldFinalized(
+        uint256 indexed requestId,
+        address indexed user,
+        uint256 indexed strike,
+        uint64 maturity,
+        bool isStable,
+        uint64 amount
+    );
+
+    error SeriesNotFound();
+    error AmountTooLarge();
+    error RequestNotFound();
+    error AlreadyFinalized();
+    error BurnExceedsRequest();
+
+    constructor(address confFactory_, address pubFactory_) {
+        confidentialFactory = IBridgeAuthorizableFactory(confFactory_);
+        publicFactory = IPublicOptionFactory(pubFactory_);
+    }
+
+    function authorizeSeries(uint256 strike, uint64 maturity) external {
+        confidentialFactory.authorizeBridge(strike, maturity);
+    }
+
+    /// @notice Burns up to `amount` confidential tokens and starts a public-decryption-backed mint request.
+    function unshield(uint256 strike, uint64 maturity, bool isStable, uint256 amount) external returns (uint256 requestId) {
         (address confStable, address confUp) = confidentialFactory.getTokens(strike, maturity);
-        (address pubStable,  address pubUp)  = publicFactory.getTokens(strike, maturity);
-        if (confStable == address(0) || pubStable == address(0)) revert SeriesNotFound();
+        (address pubStable, address pubUp) = publicFactory.getTokens(strike, maturity);
+        address confTokenAddr = isStable ? confStable : confUp;
+        address pubTokenAddr = isStable ? pubStable : pubUp;
+        if (confTokenAddr == address(0) || pubTokenAddr == address(0)) revert SeriesNotFound();
+        if (amount > type(uint64).max) revert AmountTooLarge();
 
-        OptionToken       confToken = OptionToken(isStable       ? confStable : confUp);
-        PublicOptionToken pubToken  = PublicOptionToken(isStable ? pubStable  : pubUp);
+        OptionToken confToken = OptionToken(confTokenAddr);
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         euint64 encAmount = FHE.asEuint64(uint64(amount));
         FHE.allow(encAmount, address(confToken));
-        confToken.burn(msg.sender, encAmount);
+        euint64 burnedAmount = confToken.burn(msg.sender, encAmount);
+        FHE.makePubliclyDecryptable(burnedAmount);
 
-        pubToken.mint(msg.sender, amount);
+        requestId = nextRequestId++;
+        requests[requestId] = UnshieldRequest({
+            user: msg.sender,
+            strike: strike,
+            maturity: maturity,
+            isStable: isStable,
+            requestedAmount: uint64(amount),
+            burnedAmount: burnedAmount,
+            finalized: false
+        });
 
-        emit Unshielded(msg.sender, strike, maturity, isStable, amount);
+        emit UnshieldRequested(
+            requestId, msg.sender, strike, maturity, isStable, uint64(amount), FHE.toBytes32(burnedAmount)
+        );
+    }
+
+    function finalizeUnshield(uint256 requestId, bytes calldata abiEncodedCleartexts, bytes calldata decryptionProof)
+        external
+    {
+        UnshieldRequest storage request = requests[requestId];
+        if (request.user == address(0)) revert RequestNotFound();
+        if (request.finalized) revert AlreadyFinalized();
+
+        bytes32[] memory handlesList = new bytes32[](1);
+        handlesList[0] = FHE.toBytes32(request.burnedAmount);
+        FHE.checkSignatures(handlesList, abiEncodedCleartexts, decryptionProof);
+
+        uint64 actualBurned = abi.decode(abiEncodedCleartexts, (uint64));
+        if (actualBurned > request.requestedAmount) revert BurnExceedsRequest();
+        request.finalized = true;
+
+        publicFactory.bridgeMint(request.strike, request.maturity, request.isStable, request.user, actualBurned);
+
+        emit UnshieldFinalized(
+            requestId, request.user, request.strike, request.maturity, request.isStable, actualBurned
+        );
     }
 }
 ```
 
-**Reserve accounting note:** The bridge burns confidential tokens (backed by `cWETH` in `OptionFactory`) and mints public tokens (which will be redeemed against `WETH` in `PublicOptionFactory`). The two factories hold separate collateral pools. For v1, pre-fund the public factory with WETH equal to expected unshield volume. This is a documented trust assumption to revisit in v2.
+**Reserve accounting note:** The bridge burns confidential tokens (backed by cWETH in `ConfidentialCollateralVault`) and mints public tokens (redeemable against the public factory's ETH/ERC-20 collateral vault). The two factories hold separate collateral pools. For v1, the public factory must be funded through `fundBridgeReserve(strike, maturity, amount)` before bridge mints can succeed. `bridgeMintable` enforces that public tokens are only minted up to funded public-side collateral capacity. Unshielding is asynchronous: the first transaction burns and exposes the actual burned amount handle for KMS public decryption, and `finalizeUnshield` mints exactly the verified decrypted burn amount.
 
 ---
 
@@ -536,17 +475,18 @@ contract UnshieldBridge {
 After all contracts are written:
 
 ```
-1. Deploy OptionFactory (confidential) with cWETH address
+1. Deploy OptionFactory (confidential) with cWETH address and oracle address; it deploys `ConfidentialCollateralVault`
 2. Deploy SeriesPool implementation, call OptionFactory.setPoolImplementation
 3. Deploy ConfidentialMatchingEngine, call OptionFactory.setMatchingEngine
-4. Deploy PublicOptionFactory with WETH address
+4. Deploy PublicOptionFactory with collateral token address (`address(0)` for native ETH, WETH/ERC-20 address otherwise) and oracle address; it deploys `CentralCollateralVault`
 5. Deploy UnshieldBridge(confFactory, pubFactory)
 6. Call OptionFactory.setBridge(bridge)
 7. Call PublicOptionFactory.setBridge(bridge)
 8. For each series to support:
    a. OptionFactory.createSeries(strike, maturity)
    b. PublicOptionFactory.createSeries(strike, maturity)
-   c. bridge.authorizeBridge(strike, maturity)  — or call both factory methods directly
+   c. PublicOptionFactory.fundBridgeReserve(strike, maturity, amount) for expected public unshield capacity
+   d. UnshieldBridge.authorizeSeries(strike, maturity)
 ```
 
 ---

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
+import {ZamaConfig} from "fhevm/config/ZamaConfig.sol";
 import {OptionToken} from "./OptionToken.sol";
 
 /// @notice Blind OTC matching engine for stableETH/upETH against a confidential quote token.
@@ -18,7 +19,9 @@ import {OptionToken} from "./OptionToken.sol";
 /// Nothing about amounts, prices, or match outcomes is revealed on-chain.
 
 interface IConfidentialQuoteToken {
-    function transferFrom(address from, address to, externalEuint64 encAmt, bytes calldata proof) external returns (bool);
+    function transferFrom(address from, address to, externalEuint64 encAmt, bytes calldata proof)
+        external
+        returns (bool);
     function transfer(address to, euint64 amount) external returns (bool);
     function balanceOf(address account) external view returns (euint64);
 }
@@ -26,24 +29,35 @@ interface IConfidentialQuoteToken {
 contract ConfidentialMatchingEngine {
     struct Listing {
         address seller;
-        OptionToken token;         // stableETH or upETH being sold
+        OptionToken token; // stableETH or upETH being sold
         IConfidentialQuoteToken quoteToken; // e.g. cUSDC
         uint256 strike;
         uint64 maturity;
-        euint64 lockedAmount;      // encrypted: seller's tokens in escrow
-        euint64 minReceive;        // encrypted: seller's price floor
+        euint64 lockedAmount; // encrypted: seller's tokens in escrow
+        euint64 minReceive; // encrypted: seller's price floor
         bool active;
     }
 
     uint256 public nextListingId;
     mapping(uint256 => Listing) public listings;
 
-    event ListingCreated(uint256 indexed listingId, address indexed seller, address token, address quoteToken, uint256 strike, uint64 maturity);
+    event ListingCreated(
+        uint256 indexed listingId,
+        address indexed seller,
+        address token,
+        address quoteToken,
+        uint256 strike,
+        uint64 maturity
+    );
     event FillAttempted(uint256 indexed listingId, address indexed buyer);
     event ListingCancelled(uint256 indexed listingId);
 
     error ListingNotActive();
     error NotSeller();
+
+    constructor() {
+        FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
+    }
 
     // ── Seller: create a listing ───────────────────────────────────────────
 
@@ -111,25 +125,25 @@ contract ConfidentialMatchingEngine {
         Listing storage l = listings[listingId];
         if (!l.active) revert ListingNotActive();
 
-        euint64 payment  = FHE.fromExternal(encPayment, paymentProof);
+        euint64 payment = FHE.fromExternal(encPayment, paymentProof);
         euint64 expected = FHE.fromExternal(encExpected, expectedProof);
 
         // Escrow buyer's payment
         l.quoteToken.transferFrom(msg.sender, address(this), encPayment, paymentProof);
 
         // ── FHE match verification ─────────────────────────────────────────
-        ebool c1 = FHE.ge(payment, l.minReceive);          // buyer pays enough
-        ebool c2 = FHE.ge(l.lockedAmount, expected);       // seller has enough
+        ebool c1 = FHE.ge(payment, l.minReceive); // buyer pays enough
+        ebool c2 = FHE.ge(l.lockedAmount, expected); // seller has enough
         ebool matched = FHE.and(c1, c2);
 
         // ── Compute transfer amounts (all encrypted) ───────────────────────
         // tokenOut: buyer gets min(lockedAmount, expected) if matched, else 0
-        euint64 tokenOut  = FHE.select(matched, FHE.min(l.lockedAmount, expected), FHE.asEuint64(0));
+        euint64 tokenOut = FHE.select(matched, FHE.min(l.lockedAmount, expected), FHE.asEuint64(0));
         // quoteOut: seller gets min(payment, minReceive) if matched, else 0
-        euint64 quoteOut  = FHE.select(matched, FHE.min(payment, l.minReceive), FHE.asEuint64(0));
+        euint64 quoteOut = FHE.select(matched, FHE.min(payment, l.minReceive), FHE.asEuint64(0));
         // refunds
-        euint64 tokenBack = FHE.sub(l.lockedAmount, tokenOut);  // unsold tokens back to seller
-        euint64 quoteBack = FHE.sub(payment, quoteOut);         // excess quote back to buyer
+        euint64 tokenBack = FHE.sub(l.lockedAmount, tokenOut); // unsold tokens back to seller
+        euint64 quoteBack = FHE.sub(payment, quoteOut); // excess quote back to buyer
 
         // ── Execute transfers ──────────────────────────────────────────────
         // Token → buyer (escrowed tokens held by this contract)
@@ -180,14 +194,11 @@ contract ConfidentialMatchingEngine {
 
     // ── View ───────────────────────────────────────────────────────────────
 
-    function getListing(uint256 listingId) external view returns (
-        address seller,
-        address token,
-        address quoteToken,
-        uint256 strike,
-        uint64 maturity,
-        bool active
-    ) {
+    function getListing(uint256 listingId)
+        external
+        view
+        returns (address seller, address token, address quoteToken, uint256 strike, uint64 maturity, bool active)
+    {
         Listing storage l = listings[listingId];
         return (l.seller, address(l.token), address(l.quoteToken), l.strike, l.maturity, l.active);
     }

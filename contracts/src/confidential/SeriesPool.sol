@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
+import {ZamaConfig} from "fhevm/config/ZamaConfig.sol";
 import {OptionToken} from "./OptionToken.sol";
 
 /// @notice Aggregated liquidity pool for one option token series.
@@ -19,7 +20,9 @@ import {OptionToken} from "./OptionToken.sol";
 /// @dev Deployed as an EIP-1167 clone per series. Call initialize() once after cloning.
 
 interface IConfidentialQuoteToken {
-    function transferFrom(address from, address to, externalEuint64 encAmt, bytes calldata proof) external returns (bool);
+    function transferFrom(address from, address to, externalEuint64 encAmt, bytes calldata proof)
+        external
+        returns (bool);
     function transfer(address to, euint64 amount) external returns (bool);
 }
 
@@ -39,12 +42,12 @@ contract SeriesPool {
     bool public initialized;
 
     // ── Encrypted pool state ───────────────────────────────────────────────
-    euint64 internal _encPoolBalance;       // total option tokens currently held
-    euint64 internal _encMinReceive;        // = _encPoolBalance * minPricePerToken / SCALE; updated on each deposit
+    euint64 internal _encPoolBalance; // total option tokens currently held
+    euint64 internal _encMinReceive; // = _encPoolBalance * minPricePerToken / SCALE; updated on each deposit
 
     // ── Seller FIFO accounting ─────────────────────────────────────────────
-    address[] public sellers;                              // join order (public)
-    mapping(address => euint64) public encShares;          // remaining tokens per seller (encrypted)
+    address[] public sellers; // join order (public)
+    mapping(address => euint64) public encShares; // remaining tokens per seller (encrypted)
     mapping(address => euint64) public encAccumulatedQuote; // earned quote per seller (encrypted)
     mapping(address => bool) public hasSeller;
 
@@ -67,6 +70,7 @@ contract SeriesPool {
         address factory_
     ) external {
         if (initialized) revert AlreadyInitialized();
+        FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
         initialized = true;
         optionToken = OptionToken(optionToken_);
         quoteToken = IConfidentialQuoteToken(quoteToken_);
@@ -129,29 +133,26 @@ contract SeriesPool {
     ) external {
         if (block.timestamp >= maturity) revert AlreadyMatured();
 
-        euint64 payment  = FHE.fromExternal(encPayment, paymentProof);
+        euint64 payment = FHE.fromExternal(encPayment, paymentProof);
         euint64 expected = FHE.fromExternal(encExpected, expectedProof);
 
         // Escrow buyer's payment
         quoteToken.transferFrom(msg.sender, address(this), encPayment, paymentProof);
 
         // Compute minimum required payment: expected * minPricePerToken / SCALE
-        euint64 encRequired = FHE.div(
-            FHE.mul(expected, FHE.asEuint64(minPricePerToken)),
-            SCALE
-        );
+        euint64 encRequired = FHE.div(FHE.mul(expected, FHE.asEuint64(minPricePerToken)), SCALE);
 
         // FHE match checks
-        ebool c1 = FHE.ge(payment, encRequired);         // buyer pays enough
-        ebool c2 = FHE.ge(_encPoolBalance, expected);    // pool has enough
+        ebool c1 = FHE.ge(payment, encRequired); // buyer pays enough
+        ebool c2 = FHE.ge(_encPoolBalance, expected); // pool has enough
         ebool matched = FHE.and(c1, c2);
 
         // Tokens transferred to buyer (0 if no match)
-        euint64 filled   = FHE.select(matched, FHE.min(_encPoolBalance, expected), FHE.asEuint64(0));
+        euint64 filled = FHE.select(matched, FHE.min(_encPoolBalance, expected), FHE.asEuint64(0));
         // Quote kept by pool (0 if no match)
-        euint64 kept     = FHE.select(matched, encRequired, FHE.asEuint64(0));
+        euint64 kept = FHE.select(matched, encRequired, FHE.asEuint64(0));
         // Refund to buyer
-        euint64 refund   = FHE.sub(payment, kept);
+        euint64 refund = FHE.sub(payment, kept);
 
         // Update pool balance
         euint64 newBalance = FHE.sub(_encPoolBalance, filled);
@@ -178,10 +179,10 @@ contract SeriesPool {
     ///         Can be called at any time (before or after maturity).
     function withdraw() external {
         euint64 remainingTokens = encShares[msg.sender];
-        euint64 earnedQuote     = encAccumulatedQuote[msg.sender];
+        euint64 earnedQuote = encAccumulatedQuote[msg.sender];
 
         // Zero out before transfer (re-entrancy protection)
-        encShares[msg.sender]          = FHE.asEuint64(0);
+        encShares[msg.sender] = FHE.asEuint64(0);
         encAccumulatedQuote[msg.sender] = FHE.asEuint64(0);
         FHE.allowThis(encShares[msg.sender]);
         FHE.allowThis(encAccumulatedQuote[msg.sender]);
@@ -206,8 +207,13 @@ contract SeriesPool {
 
     /// @notice Walk sellers FIFO, drain `filled` tokens and distribute proportional quote.
     ///         All arithmetic stays in FHE — no amounts revealed.
-    function _distributeToSellers(euint64 filled, euint64 /* kept */) internal {
-        euint64 remaining = filled;  // tokens left to account for
+    function _distributeToSellers(
+        euint64 filled,
+        euint64 /* kept */
+    )
+        internal
+    {
+        euint64 remaining = filled; // tokens left to account for
         uint256 n = sellers.length;
 
         for (uint256 i = 0; i < n; i++) {
@@ -227,10 +233,7 @@ contract SeriesPool {
 
             // Quote earned by this seller: taken * minPricePerToken / SCALE
             // (proportional to how many of their tokens were sold)
-            euint64 quoteEarned = FHE.div(
-                FHE.mul(taken, FHE.asEuint64(minPricePerToken)),
-                SCALE
-            );
+            euint64 quoteEarned = FHE.div(FHE.mul(taken, FHE.asEuint64(minPricePerToken)), SCALE);
             euint64 newQuote = FHE.add(encAccumulatedQuote[seller], quoteEarned);
             encAccumulatedQuote[seller] = newQuote;
             FHE.allowThis(newQuote);
@@ -243,7 +246,11 @@ contract SeriesPool {
 
     // ── View ───────────────────────────────────────────────────────────────
 
-    function sellerCount() external view returns (uint256) { return sellers.length; }
+    function sellerCount() external view returns (uint256) {
+        return sellers.length;
+    }
 
-    function encPoolBalance() external view returns (euint64) { return _encPoolBalance; }
+    function encPoolBalance() external view returns (euint64) {
+        return _encPoolBalance;
+    }
 }

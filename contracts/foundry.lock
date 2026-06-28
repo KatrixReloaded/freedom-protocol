@@ -1,0 +1,11 @@
+{
+  "lib/fhevm": {
+    "rev": "4beee65596ffe7c70ae5436fbe98cb254f923dbd"
+  },
+  "lib/forge-std": {
+    "rev": "257559546b763ec5fa7371fb77fef9102db86446"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "cfe2f2f608dd86e8458297919de93b0b03e3da22"
+  }
+}

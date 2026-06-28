@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
+import {FHE, euint64, externalEuint64} from "fhevm/lib/FHE.sol";
+import {ZamaConfig} from "fhevm/config/ZamaConfig.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {OptionToken} from "./OptionToken.sol";
 import {SeriesPool} from "./SeriesPool.sol";
+import {ConfidentialCollateralVault} from "./ConfidentialCollateralVault.sol";
 import {OptionFactoryBase} from "../base/OptionFactoryBase.sol";
 
 /// @notice Core Freedom Protocol contract.
@@ -27,7 +29,9 @@ import {OptionFactoryBase} from "../base/OptionFactoryBase.sol";
 /// Oracle price enters plaintext then is used in FHE computations.
 
 interface IConfidentialWETH {
-    function transferFrom(address from, address to, externalEuint64 encAmount, bytes calldata proof) external returns (bool);
+    function transferFrom(address from, address to, externalEuint64 encAmount, bytes calldata proof)
+        external
+        returns (bool);
     function transfer(address to, euint64 amount) external returns (bool);
     function balanceOf(address account) external view returns (euint64);
 }
@@ -41,7 +45,7 @@ contract OptionFactory is OptionFactoryBase {
         // Payout per token in SCALE units (encrypted)
         // After settle: stablePayout + upPayout = SCALE
         euint64 stablePayout; // encrypted: min(SCALE, strike * SCALE / oraclePrice)
-        euint64 upPayout;     // encrypted: SCALE - stablePayout
+        euint64 upPayout; // encrypted: SCALE - stablePayout
     }
 
     // seriesId = keccak256(abi.encodePacked(strike, maturity))
@@ -53,9 +57,8 @@ contract OptionFactory is OptionFactoryBase {
     mapping(bytes32 => mapping(bool => address)) public pools;
 
     IConfidentialWETH public immutable cWETH;
-
-    // Total encrypted cWETH held per series (for settlement accounting)
-    mapping(bytes32 => euint64) internal _reserves;
+    address public immutable oracle;
+    ConfidentialCollateralVault public immutable vault;
 
     // Optional matching engine — authorized on all token pairs at creation time
     address public matchingEngine;
@@ -78,9 +81,15 @@ contract OptionFactory is OptionFactoryBase {
     error NotSettled();
     error PoolAlreadyExists();
     error NoPoolImplementation();
+    error InvalidOracle();
+    error NotOracle();
 
-    constructor(address cWETH_) {
+    constructor(address cWETH_, address oracle_) {
+        FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
+        if (oracle_ == address(0)) revert InvalidOracle();
         cWETH = IConfidentialWETH(cWETH_);
+        oracle = oracle_;
+        vault = new ConfidentialCollateralVault(cWETH_, address(this));
     }
 
     /// @notice Register the ConfidentialMatchingEngine so it is authorized on every token pair.
@@ -119,12 +128,18 @@ contract OptionFactory is OptionFactoryBase {
         OptionToken stableToken = new OptionToken(
             string(abi.encodePacked("stableETH-", strikePart, "-", matPart)),
             string(abi.encodePacked("stETH-", strikePart, "-", matPart)),
-            address(this), strike, maturity, true
+            address(this),
+            strike,
+            maturity,
+            true
         );
         OptionToken upToken = new OptionToken(
             string(abi.encodePacked("upETH-", strikePart, "-", matPart)),
             string(abi.encodePacked("upETH-", strikePart, "-", matPart)),
-            address(this), strike, maturity, false
+            address(this),
+            strike,
+            maturity,
+            false
         );
 
         series[id] = Series({
@@ -152,27 +167,18 @@ contract OptionFactory is OptionFactoryBase {
     /// @param maturity Unix timestamp of maturity (public, defines series).
     /// @param encAmt   Encrypted cWETH amount (user-encrypted).
     /// @param proof    fhEVM input proof.
-    function split(
-        uint256 strike,
-        uint64 maturity,
-        externalEuint64 encAmt,
-        bytes calldata proof
-    ) external {
+    function split(uint256 strike, uint64 maturity, externalEuint64 encAmt, bytes calldata proof) external {
         bytes32 id = seriesId(strike, maturity);
         Series storage s = series[id];
         if (address(s.stableToken) == address(0)) revert SeriesNotFound();
         if (s.settled) revert AlreadySettled();
 
-        // Pull encrypted cWETH from user into this contract
-        euint64 amount = FHE.fromExternal(encAmt, proof);
-        cWETH.transferFrom(msg.sender, address(this), encAmt, proof);
-
-        // Track reserves
-        euint64 newReserve = FHE.add(_reserves[id], amount);
-        _reserves[id] = newReserve;
-        FHE.allowThis(newReserve);
+        // Pull encrypted cWETH from user into the central confidential vault.
+        euint64 amount = vault.depositReserve(id, msg.sender, encAmt, proof);
 
         // Mint equal encrypted amounts of both tokens
+        FHE.allow(amount, address(s.stableToken));
+        FHE.allow(amount, address(s.upToken));
         s.stableToken.mint(msg.sender, amount);
         s.upToken.mint(msg.sender, amount);
 
@@ -183,11 +189,7 @@ contract OptionFactory is OptionFactoryBase {
 
     /// @notice User burns equal encrypted amounts of both tokens to reclaim cWETH.
     /// @dev    User must have pre-approved this contract for both tokens.
-    function merge(
-        uint256 strike,
-        uint64 maturity,
-        euint64 amount
-    ) external {
+    function merge(uint256 strike, uint64 maturity, euint64 amount) external {
         bytes32 id = seriesId(strike, maturity);
         Series storage s = series[id];
         if (address(s.stableToken) == address(0)) revert SeriesNotFound();
@@ -201,9 +203,8 @@ contract OptionFactory is OptionFactoryBase {
         s.upToken.burn(address(this), amount);
 
         // Return cWETH to user
-        _reserves[id] = FHE.sub(_reserves[id], amount);
-        FHE.allowThis(_reserves[id]);
-        cWETH.transfer(msg.sender, amount);
+        FHE.allow(amount, address(vault));
+        vault.withdrawReserve(id, msg.sender, amount);
 
         emit Merge(msg.sender, id);
     }
@@ -213,6 +214,7 @@ contract OptionFactory is OptionFactoryBase {
     /// @notice Called by oracle after maturity to set payout ratios.
     /// @param oraclePrice   ETH price in USD (same units as strike, e.g. 3000 means $3000).
     function settle(uint256 strike, uint64 maturity, uint256 oraclePrice) external {
+        if (msg.sender != oracle) revert NotOracle();
         bytes32 id = seriesId(strike, maturity);
         Series storage s = series[id];
         if (address(s.stableToken) == address(0)) revert SeriesNotFound();
@@ -222,7 +224,7 @@ contract OptionFactory is OptionFactoryBase {
         (uint64 stablePay, uint64 upPay) = _computePayouts(strike, oraclePrice);
 
         s.stablePayout = FHE.asEuint64(stablePay);
-        s.upPayout     = FHE.asEuint64(upPay);
+        s.upPayout = FHE.asEuint64(upPay);
         FHE.allowThis(s.stablePayout);
         FHE.allowThis(s.upPayout);
 
@@ -251,13 +253,14 @@ contract OptionFactory is OptionFactoryBase {
         // stableClaim = stableBal * stablePayout / SCALE
         // upClaim     = upBal     * upPayout     / SCALE
         euint64 stableClaim = FHE.div(FHE.mul(stableBal, s.stablePayout), SCALE);
-        euint64 upClaim     = FHE.div(FHE.mul(upBal, s.upPayout), SCALE);
-        euint64 totalClaim  = FHE.add(stableClaim, upClaim);
+        euint64 upClaim = FHE.div(FHE.mul(upBal, s.upPayout), SCALE);
+        euint64 totalClaim = FHE.add(stableClaim, upClaim);
 
         FHE.allow(totalClaim, msg.sender);
 
         // Transfer cWETH to user
-        cWETH.transfer(msg.sender, totalClaim);
+        FHE.allow(totalClaim, address(vault));
+        vault.withdrawReserve(id, msg.sender, totalClaim);
 
         emit Redeemed(msg.sender, id);
     }
@@ -273,13 +276,10 @@ contract OptionFactory is OptionFactoryBase {
     /// @param isStable  true = stableETH pool, false = upETH pool.
     /// @param quoteToken  The confidential quote token accepted by the pool (e.g. cUSDC).
     /// @param minPricePerToken  Pool-wide minimum price at SCALE=1e6 precision.
-    function createPool(
-        uint256 strike,
-        uint64 maturity,
-        bool isStable,
-        address quoteToken,
-        uint64 minPricePerToken
-    ) external returns (address pool) {
+    function createPool(uint256 strike, uint64 maturity, bool isStable, address quoteToken, uint64 minPricePerToken)
+        external
+        returns (address pool)
+    {
         if (poolImplementation == address(0)) revert NoPoolImplementation();
         bytes32 id = seriesId(strike, maturity);
         Series storage s = series[id];
@@ -290,14 +290,7 @@ contract OptionFactory is OptionFactoryBase {
 
         OptionToken token = isStable ? s.stableToken : s.upToken;
 
-        SeriesPool(pool).initialize(
-            address(token),
-            quoteToken,
-            strike,
-            maturity,
-            minPricePerToken,
-            address(this)
-        );
+        SeriesPool(pool).initialize(address(token), quoteToken, strike, maturity, minPricePerToken, address(this));
 
         // Grant the clone permission to call mint/burn/pullFrom/authorizedTransfer
         token.setAuthorized(pool, true);
