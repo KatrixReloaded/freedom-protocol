@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(forge install *)",
+      "Bash(curl -sf https://raw.githubusercontent.com/pashov/skills/main/solidity-auditor/VERSION)"
+    ]
+  }
+}

@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
+
+/// @notice Abstract base for confidential ERC-20 tokens backed by fhEVM.
+/// @dev Balances and allowances are stored as encrypted handles (euint64).
+abstract contract ConfidentialERC20Base {
+    event Transfer(address indexed from, address indexed to);
+    event Approval(address indexed owner, address indexed spender);
+
+    uint64 internal _totalSupply;
+    string internal _name;
+    string internal _symbol;
+
+    mapping(address => euint64) internal _balances;
+    mapping(address => mapping(address => euint64)) internal _allowances;
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    function name() public view returns (string memory) { return _name; }
+    function symbol() public view returns (string memory) { return _symbol; }
+    function decimals() public pure returns (uint8) { return 6; }
+    function totalSupply() public view returns (uint64) { return _totalSupply; }
+
+    function balanceOf(address account) public view returns (euint64) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender) public view returns (euint64) {
+        return _allowances[owner][spender];
+    }
+
+    // ── User-facing: encrypted input from outside ──────────────────────────
+
+    function approve(address spender, externalEuint64 encAmount, bytes calldata proof) public returns (bool) {
+        _approve(msg.sender, spender, FHE.fromExternal(encAmount, proof));
+        return true;
+    }
+
+    function transfer(address to, externalEuint64 encAmount, bytes calldata proof) public returns (bool) {
+        _transfer(msg.sender, to, FHE.fromExternal(encAmount, proof));
+        return true;
+    }
+
+    function transferFrom(address from, address to, externalEuint64 encAmount, bytes calldata proof) public returns (bool) {
+        euint64 amount = FHE.fromExternal(encAmount, proof);
+        require(FHE.isSenderAllowed(amount));
+        ebool allowed = _updateAllowance(from, msg.sender, amount);
+        _transfer(from, to, amount, allowed);
+        return true;
+    }
+
+    // ── Contract-to-contract: internal handle already in FHE ──────────────
+
+    /// @notice Transfer using an internal euint64 handle (caller must be ACL-allowed on handle).
+    function transfer(address to, euint64 amount) public virtual returns (bool) {
+        require(FHE.isSenderAllowed(amount));
+        _transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    // ── Internal ──────────────────────────────────────────────────────────
+
+    function _approve(address owner, address spender, euint64 amount) internal {
+        _allowances[owner][spender] = amount;
+        FHE.allowThis(amount);
+        FHE.allow(amount, owner);
+        FHE.allow(amount, spender);
+        emit Approval(owner, spender);
+    }
+
+    function _updateAllowance(address owner, address spender, euint64 amount) internal returns (ebool) {
+        euint64 current = _allowances[owner][spender];
+        ebool canSpend = FHE.le(amount, current);
+        ebool hasBalance = FHE.le(amount, _balances[owner]);
+        ebool ok = FHE.and(canSpend, hasBalance);
+        _approve(owner, spender, FHE.select(ok, FHE.sub(current, amount), current));
+        return ok;
+    }
+
+    function _transfer(address from, address to, euint64 amount) internal {
+        ebool ok = FHE.le(amount, _balances[from]);
+        _transfer(from, to, amount, ok);
+    }
+
+    function _transfer(address from, address to, euint64 amount, ebool ok) internal {
+        euint64 moved = FHE.select(ok, amount, FHE.asEuint64(0));
+
+        euint64 newTo = FHE.add(_balances[to], moved);
+        _balances[to] = newTo;
+        FHE.allowThis(newTo);
+        FHE.allow(newTo, to);
+
+        euint64 newFrom = FHE.sub(_balances[from], moved);
+        _balances[from] = newFrom;
+        FHE.allowThis(newFrom);
+        FHE.allow(newFrom, from);
+
+        emit Transfer(from, to);
+    }
+
+    function _mint(address to, euint64 amount) internal {
+        euint64 newBal = FHE.add(_balances[to], amount);
+        _balances[to] = newBal;
+        FHE.allowThis(newBal);
+        FHE.allow(newBal, to);
+    }
+
+    function _burn(address from, euint64 amount) internal {
+        euint64 newBal = FHE.sub(_balances[from], amount);
+        _balances[from] = newBal;
+        FHE.allowThis(newBal);
+        FHE.allow(newBal, from);
+    }
+
+    function _transferEncrypted(address from, address to, euint64 amount) internal {
+        _transfer(from, to, amount);
+    }
+}
