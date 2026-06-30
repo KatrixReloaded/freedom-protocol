@@ -85,9 +85,9 @@ The core mechanism is identical in both modes. The only difference is whether va
 ### Split and Merge
 
 - **Split:** Lock collateral (WETH or cWETH) → Mint equal amounts of stableETH(S, M) + upETH(S, M)
-- **Merge:** Burn equal amounts of stableETH(S, M) + upETH(S, M) → Redeem collateral
+- **Merge:** Before settlement, burn equal amounts of stableETH(S, M) + upETH(S, M) → redeem collateral
 
-A (P, N) pair can be recombined into collateral at any time before maturity. There is no debt, no borrow, no collateral ratio.
+A (P, N) pair can be recombined into collateral at any time before maturity. At maturity, settlement preserves the same pair invariant: **1 P + 1 N redeems for exactly 1 unit of collateral**. There is no debt, no borrow, no collateral ratio.
 
 ### Settlement Formula
 
@@ -100,6 +100,12 @@ upETH (N) receives:     max(0, 1 - S / x) collateral
 
 **Key invariant: P + N = deposited collateral, always.** This is why liquidation is impossible — the collateral perfectly backs both sides at all times.
 
+For one matched pair at maturity:
+
+```
+P payout + N payout = min(1, S / x) + max(0, 1 - S / x) = 1 collateral
+```
+
 ---
 
 ## Public Mode (Any EVM Chain)
@@ -107,10 +113,10 @@ upETH (N) receives:     max(0, 1 - S / x) collateral
 ### Deposit Flow
 
 ```
-Native ETH → wrap to WETH → deposit into Freedom → mint P + N (standard ERC-20s)
+Native ETH or WETH/ERC-20 collateral → deposit into Freedom → mint P + N (standard ERC-20s)
 ```
 
-Or deposit WETH directly. No encryption, no shielding. All values are plaintext.
+The public implementation supports native ETH (`collateralToken = address(0)`) or an ERC-20 collateral token such as WETH. No encryption, no shielding. All values are plaintext.
 
 ### Token Standard
 
@@ -137,11 +143,11 @@ All values are plaintext. Prices, amounts, and order terms are visible on-chain.
 At maturity, the oracle resolves the final price. Payouts are computed in plaintext:
 
 ```
-P payout = min(1, S / oraclePrice) WETH per P token
-N payout = max(0, 1 - S / oraclePrice) WETH per N token
+P payout = min(1, S / oraclePrice) collateral per P token
+N payout = max(0, 1 - S / oraclePrice) collateral per N token
 ```
 
-User calls `redeem()` → burns P or N tokens → receives WETH. Simple, cheap, standard Solidity math.
+User calls `redeem()` → burns P or N tokens → receives the public collateral asset. Simple, cheap, standard Solidity math.
 
 ### Visibility
 
@@ -291,7 +297,7 @@ Strike selection: Vitalik recommends `S < current_price / 2`. At $2000, choosing
 
 At $4000, $2000, and $1000: P delivers exactly $5,000 (= 5 x $1,000 strike).
 At $500: P holds all 5 units of collateral but that's only worth $2,500 — this is the quadratic drift.
-At all prices: **P + N = 5 units of collateral**. No liquidation.
+At all prices: **5 P + 5 N = 5 units of collateral at maturity**. Equivalently, each matched `1 P + 1 N` pair redeems for exactly `1` ETH/WETH/cWETH unit. No liquidation.
 
 ---
 
@@ -429,7 +435,7 @@ upETH-1000-AUG26       <-- ConfidentialERC20
 
 | Value | Visibility | Reason |
 |---|---|---|
-| WETH deposit amount | **Public** | Standard ERC-20 transfer |
+| ETH/ERC-20 collateral deposit amount | **Public** | Native value or standard ERC-20 transfer |
 | stableETH minted amount | **Public** | Standard ERC-20 mint |
 | upETH minted amount | **Public** | Standard ERC-20 mint |
 | Strike price | **Public** | Defines the token series |
@@ -439,7 +445,7 @@ upETH-1000-AUG26       <-- ConfidentialERC20
 
 | Value | Visibility | Reason |
 |---|---|---|
-| WETH balance | **Public** | Standard ERC-20 |
+| ETH/ERC-20 collateral balance | **Public** | Native balance or standard ERC-20 |
 | stableETH balance | **Public** | Standard ERC-20 |
 | upETH balance | **Public** | Standard ERC-20 |
 
@@ -536,24 +542,33 @@ Buyers bid "blind" — they don't know the seller's minimum. This works because:
 |    → deploys stableETH + upETH (standard ERC-20) |
 |                                                   |
 |  split(strike, maturity, amount)                   |
-|    → pull WETH from user                          |
+|    → vault receives ETH or pulls ERC-20 collateral |
 |    → mint equal stableETH + upETH                 |
 |                                                   |
 |  merge(strike, maturity, amount)                   |
-|    → burn both tokens → return WETH               |
+|    → burn both tokens → vault returns collateral  |
 |                                                   |
 |  settle(strike, maturity, oraclePrice)             |
 |    → after maturity, set payout ratios             |
 |                                                   |
 |  redeem(strike, maturity)                          |
 |    → burn tokens, compute payout (plaintext math), |
-|      transfer WETH to user                         |
+|      vault transfers collateral to user            |
++--------------------------------------------------+
+
++--------------------------------------------------+
+|          CentralCollateralVault                   |
+|                                                   |
+|  Holds ETH/ERC-20 reserves for all public series  |
+|  Tracks reserve balances by seriesId              |
+|  Serves collateral flash loans from pooled liquidity |
+|  Blocks reserve changes during flash loans        |
 +--------------------------------------------------+
 
 +--------------------------------------------------+
 |         Standard ERC-20 Tokens                    |
 |                                                   |
-|  WETH — wrapped ETH (standard ERC-20)            |
+|  ETH or WETH/ERC-20 collateral                   |
 |  stableETH(S, M) — P token, stable/long-USD side |
 |  upETH(S, M) — N token, leveraged/long-ETH side  |
 |  All balances plaintext, 18 decimals              |
@@ -653,7 +668,7 @@ Suitable oracle types:
 - **TWAP** at maturity — resistant to spot manipulation
 - **Chainlink with settlement delay** — pragmatic for v1
 
-**Public mode:** The oracle submits the price as plaintext. The contract computes payout rates in plaintext. Users call `redeem()` and receive WETH. Simple math.
+**Public mode:** The oracle submits the price as plaintext. The contract computes payout rates in plaintext. Users call `redeem()` and receive the public collateral asset. Simple math.
 
 **Confidential mode:** The oracle submits the price as plaintext. The contract computes payout rates in plaintext (they are derivable from public strike + public oracle price anyway), then encrypts them for use in the per-user redemption computation which multiplies the rate by each user's encrypted balance.
 
@@ -684,9 +699,9 @@ Suitable oracle types:
 3. **Unshield bridge design** — Cross-chain unshielding (fhEVM → Ethereum mainnet) requires a trusted bridge or message relay. What security model is acceptable? Within fhEVM, it is a simple burn-and-mint.
 4. **Division precision** — `FHE.div` on encrypted integers with SCALE=1e6 (confidential mode). Rounding dust is ~1 unit (0.000001). Needs testing.
 5. **Gas costs** — FHE operations are heavier than plaintext (confidential mode). Public mode has standard EVM gas costs. Settlement is infrequent (maturity only), but confidential matching engine operations happen per trade. Coprocessor offloads heavy FHE.
-6. **Multi-collateral** — Currently WETH/cWETH-only. Extending to WBTC or other assets requires separate factory deployments in both modes.
+6. **Multi-collateral** — Public mode supports native ETH or one ERC-20 collateral per factory deployment. Confidential mode uses cWETH-style encrypted collateral with its separate confidential factory/vault path.
 7. **Perpetual variant** — Commenters on Vitalik's post proposed perpetual versions with continuous minting/burning and dynamic saturation mechanics instead of fixed expiry. Worth exploring as v2.
-8. **Oracle access control** — Currently `settle()` is permissionless. Production needs trusted oracle or dispute-based resolution.
+8. **Oracle design** — Current contracts gate `settle()` to an immutable oracle address. Production still needs a robust oracle process, ideally dispute-based or TWAP-backed.
 9. **P token adoption** — For P to replace USDC, it needs deep liquidity on major DEXs and acceptance as collateral on lending protocols. Bootstrapping this liquidity is a cold-start problem.
 10. **Regulatory classification** — P is not a stablecoin in the traditional sense (no issuer, no reserves, no peg mechanism). How regulators classify it affects adoption.
 
