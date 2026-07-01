@@ -35,6 +35,17 @@ body {
   font-family: "IBM Plex Mono", "Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 13px;
   letter-spacing: 0;
+  overflow-x: hidden;
+}
+
+.motion-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100vw;
+  height: 100vh;
+  opacity: 0.86;
+  pointer-events: none;
 }
 
 button,
@@ -66,6 +77,8 @@ a {
 }
 
 .app {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   padding-bottom: 64px;
 }
