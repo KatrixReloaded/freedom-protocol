@@ -1,21 +1,28 @@
 {
-  "name": "freedom-backend",
+  "name": "freedom-market-indexer",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch dist/src/server.js",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/server.js",
-    "index": "node dist/src/indexer/worker.js",
-    "test": "node --test dist/test/**/*.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
-    "viem": "^2.39.3"
+    "@fastify/cors": "^10.0.1",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "pg": "^8.13.1",
+    "viem": "^2.22.17",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/node": "^25.0.0",
-    "typescript": "^5.9.3"
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }
