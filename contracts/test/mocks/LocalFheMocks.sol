@@ -153,11 +153,13 @@ contract LocalFheExecutorMock {
 contract LocalFheAclMock {
     mapping(bytes32 => bool) public decryptable;
 
+    error LocalFheAclMock__MulticallFailed();
+
     function multicall(bytes[] calldata data) external payable returns (bytes[] memory results) {
         results = new bytes[](data.length);
         for (uint256 i = 0; i < data.length; i++) {
             (bool ok, bytes memory result) = address(this).delegatecall(data[i]);
-            require(ok);
+            if (!ok) revert LocalFheAclMock__MulticallFailed();
             results[i] = result;
         }
     }

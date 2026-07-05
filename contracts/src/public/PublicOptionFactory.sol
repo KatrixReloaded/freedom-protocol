@@ -4,83 +4,189 @@ pragma solidity ^0.8.24;
 import {OptionFactoryBase} from "../base/OptionFactoryBase.sol";
 import {PublicOptionToken} from "./PublicOptionToken.sol";
 import {CentralCollateralVault} from "./CentralCollateralVault.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {ProtocolConstants} from "../libraries/ProtocolConstants.sol";
+import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
 
 contract PublicOptionFactory is OptionFactoryBase {
     struct Series {
         PublicOptionToken stableToken;
         PublicOptionToken upToken;
+        uint256 strikePrice;
+        uint64 maturityTimestamp;
+        bool exists;
         bool settled;
         uint256 stablePayout; // [0, SCALE] plaintext
         uint256 upPayout;
     }
 
     mapping(bytes32 => Series) public series;
-    mapping(bytes32 => uint256) public bridgeMintable;
 
     address public bridge;
     address public immutable oracle;
+    AggregatorV3Interface public immutable ethUsdFeed;
+    uint256 public immutable depositPriceMaxStaleness;
 
     address public immutable collateralToken;
     CentralCollateralVault public immutable vault;
+    address public immutable stableTokenImplementation;
+    address public immutable upTokenImplementation;
 
-    event SeriesCreated(uint256 indexed strike, uint64 indexed maturity, address stableToken, address upToken);
+    bool private _entered;
+
+    event SeriesCreated(
+        bytes32 indexed seriesId,
+        uint256 indexed strikePrice,
+        uint64 indexed maturityTimestamp,
+        address stableToken,
+        address upToken
+    );
     event Split(address indexed user, bytes32 indexed seriesId, uint256 amount);
     event Merge(address indexed user, bytes32 indexed seriesId, uint256 amount);
     event Settled(bytes32 indexed seriesId, uint256 oraclePrice, uint256 stablePayout, uint256 upPayout);
     event Redeemed(address indexed user, bytes32 indexed seriesId, uint256 claim);
-    event BridgeReserveFunded(address indexed funder, bytes32 indexed seriesId, uint256 amount);
     event BridgeMinted(address indexed user, bytes32 indexed seriesId, bool indexed isStable, uint256 amount);
 
-    error SeriesExists();
-    error SeriesNotFound();
-    error AlreadySettled();
-    error NotYetMatured();
-    error NotSettled();
-    error InvalidOracle();
-    error NotOracle();
-    error InsufficientBridgeReserve();
+    error PublicOptionFactory__SeriesExists();
+    error PublicOptionFactory__SeriesNotFound();
+    error PublicOptionFactory__AlreadySettled();
+    error PublicOptionFactory__NotYetMatured();
+    error PublicOptionFactory__NotSettled();
+    error PublicOptionFactory__InvalidOracle();
+    error PublicOptionFactory__NotOracle();
+    error PublicOptionFactory__Reentrancy();
+    error PublicOptionFactory__AlreadySet();
+    error PublicOptionFactory__NotBridge();
 
-    constructor(address collateralToken_, address oracle_) {
-        if (oracle_ == address(0)) revert InvalidOracle();
+    constructor(address collateralToken_, address oracle_, address ethUsdFeed_, uint256 depositPriceMaxStaleness_) {
+        if (oracle_ == ProtocolConstants.ZERO_ADDRESS) revert PublicOptionFactory__InvalidOracle();
         collateralToken = collateralToken_;
         oracle = oracle_;
+        ethUsdFeed = _validateEthUsdFeed(ethUsdFeed_);
+        depositPriceMaxStaleness = depositPriceMaxStaleness_;
         vault = new CentralCollateralVault(collateralToken_, address(this));
+        stableTokenImplementation = address(new PublicOptionToken());
+        upTokenImplementation = address(new PublicOptionToken());
     }
 
-    function createSeries(uint256 strike, uint64 maturity) external returns (address stable, address up) {
-        bytes32 id = seriesId(strike, maturity);
-        if (address(series[id].stableToken) != address(0)) revert SeriesExists();
-
-        string memory strikePart = _uint2str(strike);
-        string memory matPart = _uint2str(maturity);
-
-        PublicOptionToken stableToken = new PublicOptionToken(
-            string(abi.encodePacked("stableETH-", strikePart, "-", matPart)),
-            string(abi.encodePacked("stETH-", strikePart, "-", matPart)),
-            address(this),
-            strike,
-            maturity,
-            true
-        );
-        PublicOptionToken upToken = new PublicOptionToken(
-            string(abi.encodePacked("upETH-", strikePart, "-", matPart)),
-            string(abi.encodePacked("upETH-", strikePart, "-", matPart)),
-            address(this),
-            strike,
-            maturity,
-            false
-        );
-
-        series[id] = Series({stableToken: stableToken, upToken: upToken, settled: false, stablePayout: 0, upPayout: 0});
-        emit SeriesCreated(strike, maturity, address(stableToken), address(upToken));
-        return (address(stableToken), address(upToken));
+    modifier nonReentrant() {
+        if (_entered) revert PublicOptionFactory__Reentrancy();
+        _entered = true;
+        _;
+        _entered = false;
     }
 
-    function split(uint256 strike, uint64 maturity, uint256 amount) external payable {
-        bytes32 id = seriesId(strike, maturity);
+    function createSeries(uint256 strikePrice, uint64 maturityTimestamp) external returns (address stable, address up) {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
+        if (series[id].exists) revert PublicOptionFactory__SeriesExists();
+        return _createSeries(strikePrice, maturityTimestamp, id);
+    }
+
+    function createSeriesAndSplit(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount)
+        external
+        payable
+        nonReentrant
+        returns (address stableToken, address upToken)
+    {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (s.settled) revert AlreadySettled();
+        if (!s.exists) {
+            (stableToken, upToken) = _createSeries(strikePrice, maturityTimestamp, id);
+        } else {
+            stableToken = address(s.stableToken);
+            upToken = address(s.upToken);
+        }
+        _validateDepositStrike(strikePrice, ethUsdFeed, depositPriceMaxStaleness);
+        _split(id, series[id], amount);
+    }
+
+    function _createSeries(uint256 strikePrice, uint64 maturityTimestamp, bytes32 id)
+        internal
+        returns (address stable, address up)
+    {
+        _validateStrike(strikePrice);
+        _validateMaturity(maturityTimestamp);
+
+        string memory strikePart = _uint2str(strikePrice);
+        string memory matPart = _uint2str(maturityTimestamp);
+
+        stable = Clones.cloneDeterministic(stableTokenImplementation, _tokenSalt(id, true));
+        up = Clones.cloneDeterministic(upTokenImplementation, _tokenSalt(id, false));
+
+        PublicOptionToken(stable)
+            .initialize(
+                string(
+                    abi.encodePacked(
+                        ProtocolConstants.STABLE_TOKEN_NAME_PREFIX,
+                        strikePart,
+                        ProtocolConstants.TOKEN_NAME_SEPARATOR,
+                        matPart
+                    )
+                ),
+                string(
+                    abi.encodePacked(
+                        ProtocolConstants.STABLE_TOKEN_SYMBOL_PREFIX,
+                        strikePart,
+                        ProtocolConstants.TOKEN_NAME_SEPARATOR,
+                        matPart
+                    )
+                ),
+                address(this),
+                strikePrice,
+                maturityTimestamp,
+                true
+            );
+        PublicOptionToken(up)
+            .initialize(
+                string(
+                    abi.encodePacked(
+                        ProtocolConstants.UP_TOKEN_NAME_PREFIX,
+                        strikePart,
+                        ProtocolConstants.TOKEN_NAME_SEPARATOR,
+                        matPart
+                    )
+                ),
+                string(
+                    abi.encodePacked(
+                        ProtocolConstants.UP_TOKEN_NAME_PREFIX,
+                        strikePart,
+                        ProtocolConstants.TOKEN_NAME_SEPARATOR,
+                        matPart
+                    )
+                ),
+                address(this),
+                strikePrice,
+                maturityTimestamp,
+                false
+            );
+
+        series[id] = Series({
+            stableToken: PublicOptionToken(stable),
+            upToken: PublicOptionToken(up),
+            strikePrice: strikePrice,
+            maturityTimestamp: maturityTimestamp,
+            exists: true,
+            settled: false,
+            stablePayout: ProtocolConstants.ZERO_UINT256,
+            upPayout: ProtocolConstants.ZERO_UINT256
+        });
+        if (bridge != ProtocolConstants.ZERO_ADDRESS) {
+            PublicOptionToken(stable).setAuthorized(bridge, true);
+            PublicOptionToken(up).setAuthorized(bridge, true);
+        }
+        emit SeriesCreated(id, strikePrice, maturityTimestamp, stable, up);
+    }
+
+    function split(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount) external payable nonReentrant {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
+        Series storage s = series[id];
+        if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
+        _validateDepositStrike(strikePrice, ethUsdFeed, depositPriceMaxStaleness);
+        _split(id, s, amount);
+    }
+
+    function _split(bytes32 id, Series storage s, uint256 amount) internal {
+        if (s.settled) revert PublicOptionFactory__AlreadySettled();
 
         vault.depositReserve{value: msg.value}(id, msg.sender, amount);
         s.stableToken.mint(msg.sender, amount);
@@ -88,11 +194,11 @@ contract PublicOptionFactory is OptionFactoryBase {
         emit Split(msg.sender, id, amount);
     }
 
-    function merge(uint256 strike, uint64 maturity, uint256 amount) external {
-        bytes32 id = seriesId(strike, maturity);
+    function merge(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount) external nonReentrant {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (s.settled) revert AlreadySettled();
+        if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
+        if (s.settled) revert PublicOptionFactory__AlreadySettled();
 
         s.stableToken.burn(msg.sender, amount);
         s.upToken.burn(msg.sender, amount);
@@ -100,25 +206,25 @@ contract PublicOptionFactory is OptionFactoryBase {
         emit Merge(msg.sender, id, amount);
     }
 
-    function settle(uint256 strike, uint64 maturity, uint256 oraclePrice) external {
-        if (msg.sender != oracle) revert NotOracle();
-        bytes32 id = seriesId(strike, maturity);
+    function settle(uint256 strikePrice, uint64 maturityTimestamp, uint256 oraclePrice) external {
+        if (msg.sender != oracle) revert PublicOptionFactory__NotOracle();
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (s.settled) revert AlreadySettled();
-        if (block.timestamp < maturity) revert NotYetMatured();
+        if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
+        if (s.settled) revert PublicOptionFactory__AlreadySettled();
+        if (block.timestamp < s.maturityTimestamp) revert PublicOptionFactory__NotYetMatured();
 
-        (uint64 stablePay, uint64 upPay) = _computePayouts(strike, oraclePrice);
+        (uint64 stablePay, uint64 upPay) = _computePayouts(strikePrice, oraclePrice);
         s.stablePayout = stablePay;
         s.upPayout = upPay;
         s.settled = true;
         emit Settled(id, oraclePrice, stablePay, upPay);
     }
 
-    function redeem(uint256 strike, uint64 maturity) external {
-        bytes32 id = seriesId(strike, maturity);
+    function redeem(uint256 strikePrice, uint64 maturityTimestamp) external nonReentrant {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
-        if (!s.settled) revert NotSettled();
+        if (!s.settled) revert PublicOptionFactory__NotSettled();
 
         uint256 stableBal = s.stableToken.balanceOf(msg.sender);
         uint256 upBal = s.upToken.balanceOf(msg.sender);
@@ -134,41 +240,28 @@ contract PublicOptionFactory is OptionFactoryBase {
     // ── Bridge support ─────────────────────────────────────────────────────
 
     function setBridge(address bridge_) external {
-        require(bridge == address(0), "already set");
+        if (bridge != ProtocolConstants.ZERO_ADDRESS) revert PublicOptionFactory__AlreadySet();
         bridge = bridge_;
     }
 
-    function authorizeBridge(uint256 strike, uint64 maturity) external {
-        require(msg.sender == bridge, "not bridge");
-        bytes32 id = seriesId(strike, maturity);
+    function authorizeBridge(uint256 strikePrice, uint64 maturityTimestamp) external {
+        if (msg.sender != bridge) revert PublicOptionFactory__NotBridge();
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
+        if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
         s.stableToken.setAuthorized(bridge, true);
         s.upToken.setAuthorized(bridge, true);
     }
 
-    /// @notice Prefund public-side collateral for future unshield mints.
-    /// @dev One unit is reserved per minted token side, so bridged tokens are fully backed
-    ///      even when only stableETH or only upETH is unshielded.
-    function fundBridgeReserve(uint256 strike, uint64 maturity, uint256 amount) external payable {
-        bytes32 id = seriesId(strike, maturity);
+    function bridgeMint(uint256 strikePrice, uint64 maturityTimestamp, bool isStable, address to, uint256 amount)
+        external
+        nonReentrant
+    {
+        if (msg.sender != bridge) revert PublicOptionFactory__NotBridge();
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
+        if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
 
-        vault.depositReserve{value: msg.value}(id, msg.sender, amount);
-        bridgeMintable[id] += amount;
-
-        emit BridgeReserveFunded(msg.sender, id, amount);
-    }
-
-    function bridgeMint(uint256 strike, uint64 maturity, bool isStable, address to, uint256 amount) external {
-        require(msg.sender == bridge, "not bridge");
-        bytes32 id = seriesId(strike, maturity);
-        Series storage s = series[id];
-        if (address(s.stableToken) == address(0)) revert SeriesNotFound();
-        if (bridgeMintable[id] < amount) revert InsufficientBridgeReserve();
-
-        bridgeMintable[id] -= amount;
         if (isStable) {
             s.stableToken.mint(to, amount);
         } else {
@@ -180,16 +273,43 @@ contract PublicOptionFactory is OptionFactoryBase {
 
     // ── OptionFactoryBase overrides ────────────────────────────────────────
 
-    function getTokens(uint256 strike, uint64 maturity) external view override returns (address stable, address up) {
-        bytes32 id = seriesId(strike, maturity);
+    function getSeries(uint256 strikePrice, uint64 maturityTimestamp) external view returns (Series memory) {
+        return series[seriesId(strikePrice, maturityTimestamp)];
+    }
+
+    function getTokens(uint256 strikePrice, uint64 maturityTimestamp)
+        external
+        view
+        override
+        returns (address stable, address up)
+    {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
         return (address(series[id].stableToken), address(series[id].upToken));
     }
 
-    function isSettled(uint256 strike, uint64 maturity) external view override returns (bool) {
-        return series[seriesId(strike, maturity)].settled;
+    function seriesExists(uint256 strikePrice, uint64 maturityTimestamp) external view returns (bool) {
+        return series[seriesId(strikePrice, maturityTimestamp)].exists;
+    }
+
+    function isSettled(uint256 strikePrice, uint64 maturityTimestamp) external view override returns (bool) {
+        return series[seriesId(strikePrice, maturityTimestamp)].settled;
+    }
+
+    function predictTokenAddresses(uint256 strikePrice, uint64 maturityTimestamp)
+        external
+        view
+        returns (address stableToken, address upToken)
+    {
+        bytes32 id = seriesId(strikePrice, maturityTimestamp);
+        stableToken = Clones.predictDeterministicAddress(stableTokenImplementation, _tokenSalt(id, true), address(this));
+        upToken = Clones.predictDeterministicAddress(upTokenImplementation, _tokenSalt(id, false), address(this));
     }
 
     function reserves(bytes32 id) external view returns (uint256) {
         return vault.reserves(id);
+    }
+
+    function _tokenSalt(bytes32 id, bool isStable) internal pure returns (bytes32) {
+        return keccak256(abi.encode(id, isStable));
     }
 }

@@ -8,6 +8,8 @@ import {MockERC20} from "./MockERC20.sol";
 contract RepayingFlashBorrower is IERC3156FlashBorrowerLike {
     bytes32 public constant CALLBACK_SUCCESS = keccak256("ERC3156FlashBorrower.onFlashLoan");
 
+    error RepayingFlashBorrower__RepaymentFailed();
+
     receive() external payable {}
 
     function onFlashLoan(address, address token, uint256 amount, uint256 fee, bytes calldata)
@@ -16,7 +18,7 @@ contract RepayingFlashBorrower is IERC3156FlashBorrowerLike {
     {
         if (token == address(0)) {
             (bool ok,) = payable(msg.sender).call{value: amount + fee}("");
-            require(ok);
+            if (!ok) revert RepayingFlashBorrower__RepaymentFailed();
         } else {
             MockERC20(token).approve(msg.sender, amount + fee);
         }
@@ -35,16 +37,19 @@ contract BadFlashBorrower is IERC3156FlashBorrowerLike {
 contract MutatingFlashBorrower is IERC3156FlashBorrowerLike {
     bytes32 public constant CALLBACK_SUCCESS = keccak256("ERC3156FlashBorrower.onFlashLoan");
 
+    error MutatingFlashBorrower__SplitSucceeded();
+    error MutatingFlashBorrower__RepaymentFailed();
+
     PublicOptionFactory public factory;
     uint256 public strike;
-    uint64 public maturity;
+    uint64 public maturityTimestamp;
 
     receive() external payable {}
 
-    function configure(PublicOptionFactory factory_, uint256 strike_, uint64 maturity_) external {
+    function configure(PublicOptionFactory factory_, uint256 strike_, uint64 maturityTimestamp_) external {
         factory = factory_;
         strike = strike_;
-        maturity = maturity_;
+        maturityTimestamp = maturityTimestamp_;
     }
 
     function onFlashLoan(address, address token, uint256 amount, uint256 fee, bytes calldata)
@@ -52,19 +57,18 @@ contract MutatingFlashBorrower is IERC3156FlashBorrowerLike {
         returns (bytes32)
     {
         if (token == address(0)) {
-            try factory.split{value: amount}(strike, maturity, amount) {
-                revert("split succeeded");
+            try factory.split{value: amount}(strike, maturityTimestamp, amount) {
+                revert MutatingFlashBorrower__SplitSucceeded();
             } catch {}
             (bool ok,) = payable(msg.sender).call{value: amount + fee}("");
-            require(ok);
+            if (!ok) revert MutatingFlashBorrower__RepaymentFailed();
         } else {
             MockERC20(token).approve(address(factory.vault()), amount);
-            try factory.split(strike, maturity, amount) {
-                revert("split succeeded");
+            try factory.split(strike, maturityTimestamp, amount) {
+                revert MutatingFlashBorrower__SplitSucceeded();
             } catch {}
             MockERC20(token).approve(msg.sender, amount + fee);
         }
         return CALLBACK_SUCCESS;
     }
 }
-

@@ -4,18 +4,33 @@ pragma solidity ^0.8.24;
 import {FHE, euint64} from "fhevm/lib/FHE.sol";
 import {ConfidentialERC20Base} from "./ConfidentialERC20Base.sol";
 import {OptionTokenBase} from "../base/OptionTokenBase.sol";
+import {ProtocolConstants} from "../libraries/ProtocolConstants.sol";
 
 /// @notice A single stableETH or upETH token for one (strike, maturity) series.
 /// @dev Factory and registered pools are authorized to call privileged functions.
 contract OptionToken is ConfidentialERC20Base, OptionTokenBase {
-    constructor(
+    error OptionToken__SenderNotAllowed();
+
+    constructor() ConfidentialERC20Base("", "") {
+        _initializeOptionTokenBase(
+            ProtocolConstants.INITIALIZED_IMPLEMENTATION_SENTINEL,
+            ProtocolConstants.ZERO_UINT256,
+            ProtocolConstants.ZERO_UINT64,
+            false
+        );
+    }
+
+    function initialize(
         string memory name_,
         string memory symbol_,
         address factory_,
-        uint256 strike_,
-        uint64 maturity_,
+        uint256 strikePrice_,
+        uint64 maturityTimestamp_,
         bool isStable_
-    ) ConfidentialERC20Base(name_, symbol_) OptionTokenBase(factory_, strike_, maturity_, isStable_) {}
+    ) external {
+        _initializeOptionTokenBase(factory_, strikePrice_, maturityTimestamp_, isStable_);
+        _initializeConfidentialERC20(name_, symbol_);
+    }
 
     function mint(address to, euint64 amount) external onlyAuthorized {
         _mint(to, amount);
@@ -36,7 +51,7 @@ contract OptionToken is ConfidentialERC20Base, OptionTokenBase {
     /// @notice Transfer from one address to another using an internal handle.
     ///         Used by pools to move tokens between internal addresses (pool → buyer, pool → seller).
     function authorizedTransfer(address from, address to, euint64 amount) external onlyAuthorized {
-        require(FHE.isSenderAllowed(amount));
+        if (!FHE.isSenderAllowed(amount)) revert OptionToken__SenderNotAllowed();
         _transfer(from, to, amount);
         FHE.allow(_balances[to], to);
     }

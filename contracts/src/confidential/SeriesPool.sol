@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
 import {ZamaConfig} from "fhevm/config/ZamaConfig.sol";
 import {OptionToken} from "./OptionToken.sol";
+import {ProtocolConstants} from "../libraries/ProtocolConstants.sol";
 
 /// @notice Aggregated liquidity pool for one option token series.
 ///
@@ -27,14 +28,14 @@ interface IConfidentialQuoteToken {
 }
 
 contract SeriesPool {
-    uint64 public constant SCALE = 1_000_000;
-    uint256 public constant MAX_SELLERS = 50;
+    uint64 public constant SCALE = ProtocolConstants.PAYOUT_SCALE;
+    uint256 public constant MAX_SELLERS = ProtocolConstants.MAX_POOL_SELLERS;
 
     // ── Immutable series config (set in initialize) ────────────────────────
     OptionToken public optionToken;
     IConfidentialQuoteToken public quoteToken;
-    uint256 public strike;
-    uint64 public maturity;
+    uint256 public strikePrice;
+    uint64 public maturityTimestamp;
     /// @notice Pool-wide minimum price: quote tokens per option token at SCALE precision.
     ///         e.g. 633000 means 0.633 cUSDC per stableETH token.
     uint64 public minPricePerToken;
@@ -55,31 +56,31 @@ contract SeriesPool {
     event Filled(address indexed buyer);
     event Withdrawn(address indexed seller);
 
-    error AlreadyInitialized();
-    error NotFactory();
-    error NotYetMatured();
-    error AlreadyMatured();
-    error PoolFull();
+    error SeriesPool__AlreadyInitialized();
+    error SeriesPool__NotFactory();
+    error SeriesPool__NotYetMatured();
+    error SeriesPool__AlreadyMatured();
+    error SeriesPool__PoolFull();
 
     function initialize(
         address optionToken_,
         address quoteToken_,
-        uint256 strike_,
-        uint64 maturity_,
+        uint256 strikePrice_,
+        uint64 maturityTimestamp_,
         uint64 minPricePerToken_,
         address factory_
     ) external {
-        if (initialized) revert AlreadyInitialized();
+        if (initialized) revert SeriesPool__AlreadyInitialized();
         FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
         initialized = true;
         optionToken = OptionToken(optionToken_);
         quoteToken = IConfidentialQuoteToken(quoteToken_);
-        strike = strike_;
-        maturity = maturity_;
+        strikePrice = strikePrice_;
+        maturityTimestamp = maturityTimestamp_;
         minPricePerToken = minPricePerToken_;
         factory = factory_;
 
-        _encPoolBalance = FHE.asEuint64(0);
+        _encPoolBalance = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
         FHE.allowThis(_encPoolBalance);
     }
 
@@ -88,13 +89,13 @@ contract SeriesPool {
     /// @notice Seller locks encrypted option tokens into the pool.
     ///         Deposit amount is never revealed — pool balance stays encrypted.
     function deposit(externalEuint64 encAmount, bytes calldata proof) external {
-        if (block.timestamp >= maturity) revert AlreadyMatured();
+        if (block.timestamp >= maturityTimestamp) revert SeriesPool__AlreadyMatured();
         if (!hasSeller[msg.sender]) {
-            if (sellers.length >= MAX_SELLERS) revert PoolFull();
+            if (sellers.length >= MAX_SELLERS) revert SeriesPool__PoolFull();
             sellers.push(msg.sender);
             hasSeller[msg.sender] = true;
-            encShares[msg.sender] = FHE.asEuint64(0);
-            encAccumulatedQuote[msg.sender] = FHE.asEuint64(0);
+            encShares[msg.sender] = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
+            encAccumulatedQuote[msg.sender] = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
             FHE.allowThis(encShares[msg.sender]);
             FHE.allowThis(encAccumulatedQuote[msg.sender]);
         }
@@ -131,7 +132,7 @@ contract SeriesPool {
         bytes calldata paymentProof,
         bytes calldata expectedProof
     ) external {
-        if (block.timestamp >= maturity) revert AlreadyMatured();
+        if (block.timestamp >= maturityTimestamp) revert SeriesPool__AlreadyMatured();
 
         euint64 payment = FHE.fromExternal(encPayment, paymentProof);
         euint64 expected = FHE.fromExternal(encExpected, expectedProof);
@@ -148,9 +149,10 @@ contract SeriesPool {
         ebool matched = FHE.and(c1, c2);
 
         // Tokens transferred to buyer (0 if no match)
-        euint64 filled = FHE.select(matched, FHE.min(_encPoolBalance, expected), FHE.asEuint64(0));
+        euint64 filled =
+            FHE.select(matched, FHE.min(_encPoolBalance, expected), FHE.asEuint64(ProtocolConstants.ZERO_UINT64));
         // Quote kept by pool (0 if no match)
-        euint64 kept = FHE.select(matched, encRequired, FHE.asEuint64(0));
+        euint64 kept = FHE.select(matched, encRequired, FHE.asEuint64(ProtocolConstants.ZERO_UINT64));
         // Refund to buyer
         euint64 refund = FHE.sub(payment, kept);
 
@@ -182,8 +184,8 @@ contract SeriesPool {
         euint64 earnedQuote = encAccumulatedQuote[msg.sender];
 
         // Zero out before transfer (re-entrancy protection)
-        encShares[msg.sender] = FHE.asEuint64(0);
-        encAccumulatedQuote[msg.sender] = FHE.asEuint64(0);
+        encShares[msg.sender] = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
+        encAccumulatedQuote[msg.sender] = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
         FHE.allowThis(encShares[msg.sender]);
         FHE.allowThis(encAccumulatedQuote[msg.sender]);
 

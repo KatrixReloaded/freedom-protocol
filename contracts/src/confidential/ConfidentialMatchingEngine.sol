@@ -4,11 +4,12 @@ pragma solidity ^0.8.24;
 import {FHE, euint64, ebool, externalEuint64} from "fhevm/lib/FHE.sol";
 import {ZamaConfig} from "fhevm/config/ZamaConfig.sol";
 import {OptionToken} from "./OptionToken.sol";
+import {ProtocolConstants} from "../libraries/ProtocolConstants.sol";
 
 /// @notice Blind OTC matching engine for stableETH/upETH against a confidential quote token.
 ///
 /// Flow:
-///   Seller: createListing(token, quoteToken, strike, maturity, encAmount, encMinReceive, proof)
+///   Seller: createListing(token, quoteToken, strikePrice, maturityTimestamp, encAmount, encMinReceive, proof)
 ///     → locks encrypted token amount in escrow
 ///
 ///   Buyer:  fill(listingId, encPayment, encExpected, proof)
@@ -31,8 +32,8 @@ contract ConfidentialMatchingEngine {
         address seller;
         OptionToken token; // stableETH or upETH being sold
         IConfidentialQuoteToken quoteToken; // e.g. cUSDC
-        uint256 strike;
-        uint64 maturity;
+        uint256 strikePrice;
+        uint64 maturityTimestamp;
         euint64 lockedAmount; // encrypted: seller's tokens in escrow
         euint64 minReceive; // encrypted: seller's price floor
         bool active;
@@ -46,14 +47,14 @@ contract ConfidentialMatchingEngine {
         address indexed seller,
         address token,
         address quoteToken,
-        uint256 strike,
-        uint64 maturity
+        uint256 strikePrice,
+        uint64 maturityTimestamp
     );
     event FillAttempted(uint256 indexed listingId, address indexed buyer);
     event ListingCancelled(uint256 indexed listingId);
 
-    error ListingNotActive();
-    error NotSeller();
+    error ConfidentialMatchingEngine__ListingNotActive();
+    error ConfidentialMatchingEngine__NotSeller();
 
     constructor() {
         FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
@@ -69,8 +70,8 @@ contract ConfidentialMatchingEngine {
     function createListing(
         OptionToken token,
         IConfidentialQuoteToken quoteToken,
-        uint256 strike,
-        uint64 maturity,
+        uint256 strikePrice,
+        uint64 maturityTimestamp,
         externalEuint64 encAmount,
         externalEuint64 encMinReceive,
         bytes calldata amountProof,
@@ -87,8 +88,8 @@ contract ConfidentialMatchingEngine {
             seller: msg.sender,
             token: token,
             quoteToken: quoteToken,
-            strike: strike,
-            maturity: maturity,
+            strikePrice: strikePrice,
+            maturityTimestamp: maturityTimestamp,
             lockedAmount: amount,
             minReceive: minPay,
             active: true
@@ -98,7 +99,7 @@ contract ConfidentialMatchingEngine {
         FHE.allowThis(minPay);
         FHE.allow(minPay, msg.sender); // seller can view their own min
 
-        emit ListingCreated(listingId, msg.sender, address(token), address(quoteToken), strike, maturity);
+        emit ListingCreated(listingId, msg.sender, address(token), address(quoteToken), strikePrice, maturityTimestamp);
     }
 
     // ── Buyer: attempt a fill ──────────────────────────────────────────────
@@ -123,7 +124,7 @@ contract ConfidentialMatchingEngine {
         bytes calldata expectedProof
     ) external {
         Listing storage l = listings[listingId];
-        if (!l.active) revert ListingNotActive();
+        if (!l.active) revert ConfidentialMatchingEngine__ListingNotActive();
 
         euint64 payment = FHE.fromExternal(encPayment, paymentProof);
         euint64 expected = FHE.fromExternal(encExpected, expectedProof);
@@ -138,9 +139,11 @@ contract ConfidentialMatchingEngine {
 
         // ── Compute transfer amounts (all encrypted) ───────────────────────
         // tokenOut: buyer gets min(lockedAmount, expected) if matched, else 0
-        euint64 tokenOut = FHE.select(matched, FHE.min(l.lockedAmount, expected), FHE.asEuint64(0));
+        euint64 tokenOut =
+            FHE.select(matched, FHE.min(l.lockedAmount, expected), FHE.asEuint64(ProtocolConstants.ZERO_UINT64));
         // quoteOut: seller gets min(payment, minReceive) if matched, else 0
-        euint64 quoteOut = FHE.select(matched, FHE.min(payment, l.minReceive), FHE.asEuint64(0));
+        euint64 quoteOut =
+            FHE.select(matched, FHE.min(payment, l.minReceive), FHE.asEuint64(ProtocolConstants.ZERO_UINT64));
         // refunds
         euint64 tokenBack = FHE.sub(l.lockedAmount, tokenOut); // unsold tokens back to seller
         euint64 quoteBack = FHE.sub(payment, quoteOut); // excess quote back to buyer
@@ -167,7 +170,7 @@ contract ConfidentialMatchingEngine {
 
         // Deactivate listing (fully consumed or failed — amounts handle it)
         l.active = false;
-        l.lockedAmount = FHE.asEuint64(0);
+        l.lockedAmount = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
 
         emit FillAttempted(listingId, msg.sender);
     }
@@ -177,12 +180,12 @@ contract ConfidentialMatchingEngine {
     /// @notice Seller cancels and retrieves locked tokens.
     function cancelListing(uint256 listingId) external {
         Listing storage l = listings[listingId];
-        if (!l.active) revert ListingNotActive();
-        if (l.seller != msg.sender) revert NotSeller();
+        if (!l.active) revert ConfidentialMatchingEngine__ListingNotActive();
+        if (l.seller != msg.sender) revert ConfidentialMatchingEngine__NotSeller();
 
         euint64 amount = l.lockedAmount;
         l.active = false;
-        l.lockedAmount = FHE.asEuint64(0);
+        l.lockedAmount = FHE.asEuint64(ProtocolConstants.ZERO_UINT64);
 
         // Return escrowed tokens to seller via authorizedTransfer (not mint).
         FHE.allow(amount, address(l.token));
@@ -197,9 +200,16 @@ contract ConfidentialMatchingEngine {
     function getListing(uint256 listingId)
         external
         view
-        returns (address seller, address token, address quoteToken, uint256 strike, uint64 maturity, bool active)
+        returns (
+            address seller,
+            address token,
+            address quoteToken,
+            uint256 strikePrice,
+            uint64 maturityTimestamp,
+            bool active
+        )
     {
         Listing storage l = listings[listingId];
-        return (l.seller, address(l.token), address(l.quoteToken), l.strike, l.maturity, l.active);
+        return (l.seller, address(l.token), address(l.quoteToken), l.strikePrice, l.maturityTimestamp, l.active);
     }
 }
