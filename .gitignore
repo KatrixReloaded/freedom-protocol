@@ -1,4 +1,10 @@
 backend/node_modules/
+backend/.env
+backend/*.sqlite
+backend/*.sqlite-*
+backend/dist/
 backend/package-lock.json
 frontend/package-lock.json
 frontend/node_modules/
+contracts/cache/
+contracts/out/
