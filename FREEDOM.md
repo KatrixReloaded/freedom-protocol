@@ -52,7 +52,7 @@ This composability is why public mode is primary. Confidential P tokens on fhEVM
 
 | | Public Mode | Confidential Mode |
 |---|---|---|
-| **Chain** | Any EVM (Ethereum, Arbitrum, Base, etc.) | Zama fhEVM only |
+| **Chain** | Any EVM (Ethereum, Arbitrum, Base, etc.) | Zama fhEVM-compatible deployment such as Sepolia |
 | **Token standard** | Standard ERC-20 (OpenZeppelin) | ConfidentialERC20 (ERC-7984) |
 | **Balances** | Plaintext | Encrypted |
 | **Trading** | Public orderbook/DEX, AMM pools | Blind matching engine (FHE-verified) |
@@ -79,8 +79,14 @@ The core mechanism is identical in both modes. The only difference is whether va
 ### Parameters
 
 - **T** — Price index denominated in ETH (e.g., USD/ETH)
-- **S** — Strike price, chosen at mint time (same units as T)
-- **M** — Maturity date (unix timestamp)
+- **S** — Strike price, chosen at mint time (same units as T), restricted on-chain to positive multiples of 50
+- **M** — Maturity timestamp, aligned to the current PoC slot size of 10 minutes
+
+Series identity is scoped by factory and keyed on-chain as:
+
+```text
+seriesId = keccak256(abi.encode(strikePrice, maturityTimestamp))
+```
 
 ### Split and Merge
 
@@ -538,20 +544,24 @@ Buyers bid "blind" — they don't know the seller's minimum. This works because:
 +--------------------------------------------------+
 |              PublicOptionFactory                   |
 |                                                   |
-|  createSeries(strike, maturity)                   |
-|    → deploys stableETH + upETH (standard ERC-20) |
+|  createSeries(strikePrice, maturityTimestamp)     |
+|    → deploys deterministic stableETH + upETH clones |
 |                                                   |
-|  split(strike, maturity, amount)                   |
+|  createSeriesAndSplit(...)                        |
+|    → creates missing series, deposits collateral, |
+|      mints P + N                                  |
+|                                                   |
+|  split(strikePrice, maturityTimestamp, amount)     |
 |    → vault receives ETH or pulls ERC-20 collateral |
 |    → mint equal stableETH + upETH                 |
 |                                                   |
-|  merge(strike, maturity, amount)                   |
+|  merge(strikePrice, maturityTimestamp, amount)     |
 |    → burn both tokens → vault returns collateral  |
 |                                                   |
-|  settle(strike, maturity, oraclePrice)             |
+|  settle(strikePrice, maturityTimestamp, oraclePrice) |
 |    → after maturity, set payout ratios             |
 |                                                   |
-|  redeem(strike, maturity)                          |
+|  redeem(strikePrice, maturityTimestamp)            |
 |    → burn tokens, compute payout (plaintext math), |
 |      vault transfers collateral to user            |
 +--------------------------------------------------+
@@ -571,7 +581,7 @@ Buyers bid "blind" — they don't know the seller's minimum. This works because:
 |  ETH or WETH/ERC-20 collateral                   |
 |  stableETH(S, M) — P token, stable/long-USD side |
 |  upETH(S, M) — N token, leveraged/long-ETH side  |
-|  All balances plaintext, 18 decimals              |
+|  Option token balances plaintext, 6 decimals      |
 +--------------------------------------------------+
 ```
 
@@ -583,20 +593,25 @@ Public mode does not need its own matching engine — P and N tokens trade on ex
 +--------------------------------------------------+
 |           ConfidentialOptionFactory               |
 |                                                   |
-|  createSeries(strike, maturity)                   |
-|    → deploys stableETH + upETH ConfidentialERC20  |
+|  createSeries(strikePrice, maturityTimestamp)     |
+|    → deploys deterministic stableETH + upETH clones |
 |                                                   |
-|  split(strike, maturity, encAmount, proof)         |
-|    → pull encrypted cWETH from user               |
+|  createSeriesAndSplit(..., encAmt, proof)         |
+|    → creates missing series, deposits cWETH,      |
+|      mints encrypted P + N                        |
+|                                                   |
+|  split(strikePrice, maturityTimestamp, encAmt, proof) |
+|    → factory consumes browser encrypted input once |
+|    → vault pulls cWETH using internal FHE handle  |
 |    → mint equal encrypted stableETH + upETH       |
 |                                                   |
-|  merge(strike, maturity, amount)                   |
+|  merge(strikePrice, maturityTimestamp, amount)     |
 |    → burn both encrypted amounts → return cWETH   |
 |                                                   |
-|  settle(strike, maturity, oraclePrice)             |
+|  settle(strikePrice, maturityTimestamp, oraclePrice) |
 |    → after maturity, set payout ratios             |
 |                                                   |
-|  redeem(strike, maturity)                          |
+|  redeem(strikePrice, maturityTimestamp)            |
 |    → burn tokens, compute payout via FHE,          |
 |      transfer cWETH to user                        |
 +--------------------------------------------------+
