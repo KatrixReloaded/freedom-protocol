@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { deploymentConfigFromEnv } from "./deployment-config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = __dirname;
@@ -21,6 +22,11 @@ function send(res, status, body, type = "text/plain; charset=utf-8") {
   res.end(body);
 }
 
+function envScript() {
+  const config = deploymentConfigFromEnv(process.env);
+  return `window.__FREEDOM_CONFIG__ = ${JSON.stringify(config)};\n`;
+}
+
 function fileFor(urlPath) {
   const clean = decodeURIComponent(urlPath.split("?")[0]);
   if (clean.startsWith("/src/")) return path.join(root, clean);
@@ -32,7 +38,9 @@ function fileFor(urlPath) {
 
 http
   .createServer((req, res) => {
-    if ((req.url || "/").split("?")[0] === "/") {
+    const urlPath = (req.url || "/").split("?")[0];
+    if (urlPath === "/env.js") return send(res, 200, envScript(), "text/javascript; charset=utf-8");
+    if (urlPath === "/") {
       res.writeHead(302, { location: "/deposit" });
       res.end();
       return;

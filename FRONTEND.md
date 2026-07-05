@@ -33,13 +33,15 @@ Settle matured P and/or N for ETH/WETH/cWETH collateral
 
 - Do not build a marketing landing page.
 - Do not make separate top-level sections for public and confidential mode.
-- Do not make Portfolio, Bridge, Config, Shield, or Market Info primary pages.
+- Do not make Portfolio, Bridge, Config, or Market Info primary pages. `/shield`
+  may be a compact primary utility page when ShieldBridge is configured.
 - Do not add bright color themes, gradients, blue DeFi styling, glassmorphism, or
   decorative illustrations.
 - Do not hide the important protocol actions behind long educational copy.
 
 Secondary views can exist as modals, drawers, compact panels, or admin-only
-routes, but the visible app should be organized around Deposit, Trade, Settle.
+routes, but the visible app should be organized around Deposit, Trade, Settle,
+with Shield only as a compact bridge utility.
 
 ## Mental Model
 
@@ -106,7 +108,7 @@ Use confidential mode for private position sizing and private trade amounts.
 - Balances: encrypted.
 - Trading: confidential matching/listing flow.
 - Settlement: claim cWETH using encrypted balances.
-- Network: Zama fhEVM deployment.
+- Network: a deployed Zama fhEVM-compatible chain such as Sepolia.
 
 When the user switches to Confidential, the app should check the connected
 network and prompt a network switch if needed. FHE SDK initialization should be
@@ -212,11 +214,12 @@ Respect `prefers-reduced-motion`; disable non-essential motion when requested.
 
 ### Routes
 
-Only these are primary navigation routes:
+Primary navigation routes:
 
 ```text
 /deposit
 /trade
+/shield
 /settle
 ```
 
@@ -321,7 +324,8 @@ Requirements:
 - Balance line.
 - `Max` button.
 - Validation for insufficient balance, missing allowance, unsupported network,
-  invalid amount, expired series, or unsettled series.
+  invalid amount, and action-specific series state. Trade must not reject sells
+  solely because maturity has passed.
 - Consistent 6-decimal formatting for P/N and cWETH protocol amounts.
 
 ### Transaction Stepper
@@ -406,15 +410,19 @@ N upETH-[strike]-[maturity]        [amount]
 Public transaction flow:
 
 ```text
-1. If selected series does not exist:
-   PublicOptionFactory.createSeries(strike, maturity)
-
-2. If collateral is native ETH:
-   PublicOptionFactory.split(strike, maturity, amount, { value: amount })
-
-3. If collateral is WETH/ERC20:
-   collateral.approve(factory or vault spender, amount), when needed
-   PublicOptionFactory.split(strike, maturity, amount)
+1. Validate strikePrice as a positive multiple of 50.
+2. Use the selected 10-minute `maturityTimestamp`.
+3. Read factory registry for the selected series.
+4. If series exists:
+   use returned P/N token addresses.
+5. If series does not exist:
+   show predicted P/N token addresses.
+6. If collateral is native ETH:
+   PublicOptionFactory.createSeriesAndSplit(..., { value: amount })
+   or split(...) for already-created series.
+7. If collateral is WETH/ERC20:
+   collateral.approve(factory.vault(), amount), when needed.
+   PublicOptionFactory.createSeriesAndSplit(...) or split(...).
 ```
 
 After success:
@@ -427,8 +435,9 @@ After success:
 
 User deposits `cWETH`.
 
-Do not make shield/bridge a main page. If the user lacks cWETH, include a
-compact inline cWETH acquisition panel inside Deposit.
+The current bridge contract is `ShieldBridge`. If `/shield` is enabled, keep it
+compact and client-only. If the user lacks cWETH, include a compact inline cWETH
+acquisition panel inside Deposit.
 
 Confidential primary form:
 
@@ -453,14 +462,24 @@ Amounts remain encrypted on-chain.
 Confidential flow:
 
 ```text
-1. Ensure user is on Zama fhEVM.
+1. Ensure user is on the configured confidential deployment chain, e.g. Sepolia.
 2. Initialize FHE SDK lazily.
-3. If selected series does not exist:
-   OptionFactory.createSeries(strike, maturity)
-4. Encrypt amount client-side as externalEuint64.
-5. Submit:
-   OptionFactory.split(strike, maturity, encryptedAmount, proof)
+3. Authorize factory.vault() on cWETH.
+   - allowance mode: encrypt allowance for cWETHAddress + userAddress and call
+     cWETH.approve(vault, encAllowance, allowanceProof).
+   - operator mode: call the ERC7984-style operator authorization, e.g.
+     setOperator(vault, until).
+4. Encrypt deposit amount for factoryAddress + userAddress.
+5. If selected series does not exist:
+   submit OptionFactory.createSeriesAndSplit(strikePrice, maturityTimestamp,
+   encAmt, proof).
+6. If selected series exists:
+   submit OptionFactory.split(strikePrice, maturityTimestamp, encAmt, proof).
 ```
+
+The same `externalEuint64/proof` must not be reused for cWETH transfer. The
+factory consumes the external input once and the contracts pass internal
+encrypted handles to the vault/cWETH.
 
 cWETH acquisition panel:
 
@@ -507,10 +526,28 @@ Shared controls:
 - Mode switch.
 - Series selector.
 - Token side: `P stableETH` or `N upETH`.
+- Optional market filter: `All`, `Live`, `Settled`; default `All`.
 - Buy/Sell selector.
 - Amount.
 - Limit price or expected receive, depending on backend support.
 - Balance and allowance state.
+
+Market state rules:
+
+- Do not hide matured or settled series from Trade by default.
+- `Live` means not settled yet. It can temporarily include matured but
+  unsettled series while keeper settlement is pending.
+- `Settled` means factory settlement emitted and payout ratios are fixed.
+- Do not expose a separate `Matured` market tab/filter.
+- A matured unsettled series should appear under `Live` with a small
+  `settlement pending` status and a path to Settle.
+- A settled series should show fixed P and N payout info so buyers understand
+  what they are buying.
+- Users may sell matured or settled P/N tokens when they have balance and the
+  token contract/listing backend allows it.
+- Do not disable Sell solely because maturity has passed. Disable only for no
+  balance, token interaction failure, invalid listing terms, or backend listing
+  lifecycle states such as cancelled, filled, or explicitly expired.
 
 ### Public Trade
 
@@ -548,6 +585,8 @@ Public market display:
 - Last price.
 - Available liquidity.
 - User balances for selected P and N.
+- Series state: `Live`, `Matured, settlement pending`, or `Settled`.
+- Fixed P/N payout details for settled series.
 - Token addresses in compact detail menu.
 
 Public flow:
@@ -693,15 +732,21 @@ Public flow:
 3. Read user's P and N balances.
 4. Check maturity and settlement state.
 5. For settled series, calculate estimated claim from payout rates.
-6. Submit PublicOptionFactory.redeem(strike, maturity).
+6. Submit PublicOptionFactory.redeem(strikePrice, maturityTimestamp).
 ```
 
-Oracle/admin settlement:
+Chainlink adapter settlement:
 
-- If connected account is the oracle/admin, show `Settle series` controls for
-  matured unsettled series.
-- Keep these controls visually secondary.
-- Non-oracle users should see `Awaiting settlement`, not a broken form.
+- For matured unsettled series, show `Settle series` when an oracle adapter is
+  configured.
+- Read `latestEthUsdPrice()` from the adapter and show ETH/USD plus the
+  Chainlink update timestamp.
+- Public mode calls `settlePublic(publicFactory, strikePrice, maturityTimestamp)`.
+- Confidential mode calls
+  `settleConfidential(confidentialFactory, strikePrice, maturityTimestamp)`.
+- Do not expose a manual oracle price input for normal users.
+- Do not call factory `settle(strikePrice, maturityTimestamp, oraclePrice)` from the
+  frontend UI.
 
 ### Confidential Settle
 
@@ -717,23 +762,30 @@ Confidential UI requirements:
 Confidential flow:
 
 ```text
-1. Ensure user is on Zama fhEVM.
+1. Ensure user is on the configured confidential deployment chain, e.g. Sepolia.
 2. Query confidential series.
 3. Read encrypted P and N balance handles.
 4. Allow user to reveal local display balances.
 5. For settled series, estimate claim locally after reveal when possible.
-6. Submit OptionFactory.redeem(strike, maturity).
+6. Submit OptionFactory.redeem(strikePrice, maturityTimestamp).
 7. User receives cWETH.
 ```
 
-If unshielding confidential P/N to public P/N is still supported, expose it as a
-secondary action in Settle or position details:
+ShieldBridge supports moving option tokens between public and confidential
+forms:
 
 ```text
-More actions -> Unshield to public token
+Public -> Confidential:
+  shield(strikePrice, maturityTimestamp, isStable, amount)
+
+Confidential -> Public:
+  unshield(strikePrice, maturityTimestamp, isStable, amount)
+  finalizeUnshield(requestId, abiEncodedCleartexts, decryptionProof)
 ```
 
-Do not make Unshield a primary page.
+The frontend must not fake `finalizeUnshield`; show pending finalization until
+the backend keeper observes the request, public-decrypts the burned amount
+handle, and submits finalization.
 
 ## Data And Backend Integration
 
@@ -782,9 +834,22 @@ Confidential contracts:
 - `contracts/src/confidential/ConfidentialMatchingEngine.sol`
 - `contracts/src/confidential/ConfidentialERC20Base.sol`
 
-Bridge/unshield:
+Bridge:
 
-- `contracts/src/bridge/UnshieldBridge.sol`
+- `contracts/src/bridge/ShieldBridge.sol`
+
+Sepolia defaults:
+
+- Public WETH: `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`
+- Zama Sepolia cWETHMock: `0x46208622DA27d91db4f0393733C8BA082ed83158`
+- WETH wraps Sepolia ETH through `deposit()` payable; it is not a faucet mint.
+- cWETH mint/faucet behavior depends on the verified Zama wrapper/mock token ABI.
+- Public factory bridge reserve capacity/funding UI is obsolete; `fundBridgeReserve`,
+  `bridgeMintable`, and `BridgeReserveFunded` are removed.
+- Optional bridge keeper status API: `FREEDOM_MARKET_API_URL`.
+- ShieldBridge keeper status is read with `GET /bridges/requests`; the
+  frontend does not submit clear amounts, decrypt proofs, signatures, handles,
+  or plaintext balances to the backend.
 
 Shared interfaces/base:
 
@@ -810,7 +875,7 @@ Labels:
 
 - Use `P stableETH` and `N upETH` consistently.
 - Use `Public` and `Confidential` consistently.
-- Use `Deposit`, `Trade`, and `Settle` as the only main nav labels.
+- Use `Deposit`, `Trade`, `Settle`, and `Shield` as the main nav labels.
 
 ## Wallet And Network UX
 
@@ -819,7 +884,7 @@ Wallet states:
 - Disconnected.
 - Connected wrong network.
 - Connected supported public network.
-- Connected Zama fhEVM for confidential mode.
+- Connected configured confidential network for confidential mode.
 
 Rules:
 
@@ -828,6 +893,42 @@ Rules:
 - Confidential actions require fhEVM.
 - Avoid full-page blocking unless no deployment data is available.
 - Show precise blocking reason near the disabled action.
+
+### Sepolia Runtime Config
+
+The frontend can be configured from build/Vercel env or runtime `/env.js`.
+
+```text
+FREEDOM_SEPOLIA_PUBLIC_ETH_FACTORY=
+FREEDOM_SEPOLIA_PUBLIC_WETH_FACTORY=
+FREEDOM_SEPOLIA_WETH_TOKEN=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14
+
+FREEDOM_SEPOLIA_CONFIDENTIAL_FACTORY=
+FREEDOM_SEPOLIA_CWETH_TOKEN=0x46208622DA27d91db4f0393733C8BA082ed83158
+FREEDOM_SEPOLIA_CWETH_AUTH_MODE=operator # allowance | operator | none
+FREEDOM_SEPOLIA_CWETH_OPERATOR_UNTIL=      # optional unix timestamp
+
+FREEDOM_ANVIL_SHIELD_BRIDGE=
+FREEDOM_SEPOLIA_SHIELD_BRIDGE=
+FREEDOM_ANVIL_ORACLE_ADAPTER=
+FREEDOM_SEPOLIA_ORACLE_ADAPTER=
+
+FREEDOM_ZAMA_GATEWAY_CHAIN_ID=10901
+FREEDOM_ZAMA_RELAYER_URL=https://relayer.testnet.zama.org
+```
+
+cWETH auth modes:
+
+- `allowance`: encrypt allowance for `cWETHAddress + userAddress`, then call
+  `approve(factory.vault(), encAllowance, proof)`.
+- `operator`: call the ERC7984-style operator method, e.g.
+  `setOperator(factory.vault(), until)`.
+- `none`: dev/testing only.
+
+Confidential balance reveal should use `confidentialBalanceOf(address)` for the
+encrypted handle where available, request a wallet EIP-712 user-decrypt
+signature, and keep plaintext balances only in memory. Do not show fake
+decrypted balances.
 
 Example button labels:
 
@@ -854,7 +955,7 @@ Insufficient WETH balance.
 Approve WETH before depositing.
 This series has already matured.
 This series has not been settled yet.
-Confidential mode requires Zama fhEVM.
+Confidential mode requires the configured confidential network.
 Encryption failed. Try again.
 Transaction rejected in wallet.
 ```
@@ -894,7 +995,7 @@ invalidated after transactions.
 The finished frontend should have:
 
 - `/` redirects to `/deposit`.
-- `/deposit`, `/trade`, and `/settle` primary pages.
+- `/deposit`, `/trade`, `/shield`, and `/settle` primary pages.
 - A dark greyscale shell with yellow accent states.
 - Monospace typography.
 - Public/Confidential mode switch on every primary page.
@@ -908,4 +1009,4 @@ The finished frontend should have:
 - Micro-animations for mode switch, page transitions, forms, tables, tx states,
   balance reveal, and market updates.
 - Reduced-motion support.
-- No primary pages other than Deposit, Trade, and Settle.
+- No primary pages other than Deposit, Trade, Shield, and Settle.

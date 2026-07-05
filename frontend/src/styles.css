@@ -199,6 +199,7 @@ h2 {
 .muted,
 .field-hint,
 .empty p,
+.error-text,
 .position span,
 small {
   color: var(--text-muted);
@@ -268,17 +269,35 @@ small {
 }
 
 .network.warn,
-.warn-text {
+.warn-text,
+.error-text {
   color: var(--danger);
+}
+
+.network-button {
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.network-button:hover:not(:disabled) {
+  transform: none;
+  filter: brightness(1.25);
 }
 
 .form-grid {
   display: grid;
   gap: 12px;
+  align-items: start;
 }
 
 .form-grid.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.series-panel .form-grid {
+  align-items: end;
 }
 
 .field {
@@ -287,8 +306,54 @@ small {
 }
 
 .field-label {
+  min-height: 14px;
   color: var(--text-muted);
   font-size: 11px;
+}
+
+.label-with-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.info-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--yellow);
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+}
+
+.tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  width: min(280px, 70vw);
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.4;
+  transform: translateX(-50%) translateY(3px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.info-icon:hover .tooltip,
+.info-icon:focus .tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 input,
@@ -492,6 +557,11 @@ summary {
   gap: 6px;
 }
 
+.series-metric {
+  min-height: 38px;
+  align-content: center;
+}
+
 .payout-grid,
 .balance-grid {
   display: grid;
@@ -522,6 +592,19 @@ summary {
 .encrypted-line {
   align-items: center;
   padding: 9px;
+  flex-wrap: wrap;
+}
+
+.encrypted-line .reveal-error {
+  flex-basis: 100%;
+}
+
+.reveal-card .button {
+  justify-self: start;
+}
+
+.reveal-error {
+  color: #ff8b8b;
 }
 
 .masked {
@@ -532,6 +615,10 @@ summary {
 .revealed,
 .flash {
   color: var(--yellow);
+}
+
+.error-line {
+  border-color: rgba(255, 107, 107, 0.35);
 }
 
 @keyframes pulse {
@@ -691,15 +778,22 @@ tbody tr:hover {
 
 .api-config {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto auto;
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   align-items: center;
-  max-width: 720px;
+  max-width: 100%;
   margin-top: 10px;
 }
 
-.api-config small {
+.api-config small,
+.config-actions {
   grid-column: 1 / -1;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .loader {
@@ -741,7 +835,6 @@ tbody tr:hover {
   }
 
   .primary-nav,
-  .desktop-mode,
   .network {
     display: none;
   }
@@ -772,18 +865,11 @@ tbody tr:hover {
     align-items: start;
   }
 
-  .page-mode {
-    width: 100%;
-  }
-
-  .page-mode .segmented {
-    width: 100%;
-  }
-
   .layout.two,
   .layout.trade,
   .layout.settle,
   .form-grid.three,
+  .api-config,
   .balance-grid,
   .payout-grid {
     grid-template-columns: 1fr;
