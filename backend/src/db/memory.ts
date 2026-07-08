@@ -367,6 +367,7 @@ export class MemoryRepository implements Repository {
   }
 
   async listSeries(filters: SeriesFilters): Promise<SeriesRow[]> {
+    const now = BigInt(Math.floor(Date.now() / 1000));
     return [...this.series.values()].filter((row) => {
       if (filters.chainId && row.chainId !== filters.chainId) return false;
       if (filters.factory && row.factoryAddress !== normalizeAddress(filters.factory)) return false;
@@ -374,7 +375,14 @@ export class MemoryRepository implements Repository {
       if (filters.strike && row.strikePrice !== filters.strike) return false;
       if (filters.maturityTimestamp && row.maturityTimestamp !== filters.maturityTimestamp) return false;
       if (filters.settled !== undefined && row.settled !== filters.settled) return false;
+      if (filters.status === "active" && (BigInt(row.maturityTimestamp) <= now || row.settled)) return false;
       return true;
+    }).sort((left, right) => {
+      const maturity = BigInt(left.maturityTimestamp) - BigInt(right.maturityTimestamp);
+      if (maturity !== 0n) return maturity < 0n ? -1 : 1;
+      const strike = BigInt(left.strikePrice) - BigInt(right.strikePrice);
+      if (strike !== 0n) return strike < 0n ? -1 : 1;
+      return left.factoryAddress.localeCompare(right.factoryAddress);
     });
   }
 
@@ -394,6 +402,10 @@ export class MemoryRepository implements Repository {
   }
 
   async listListings(filters: ListingFilters): Promise<ListingRow[]> {
+    const engineAddresses =
+      filters.engineAddresses === undefined
+        ? undefined
+        : new Set(filters.engineAddresses.map((address) => normalizeAddress(address)));
     return [...this.listings.values()].map((row) => this.enrichListing(row)).filter((row) => {
       if (filters.chainId && row.chainId !== filters.chainId) return false;
       if (filters.seriesId && row.seriesId !== filters.seriesId.toLowerCase()) return false;
@@ -402,6 +414,8 @@ export class MemoryRepository implements Repository {
       if (filters.active !== undefined && row.active !== filters.active) return false;
       if (filters.seller && row.seller !== normalizeAddress(filters.seller)) return false;
       if (filters.settled !== undefined && row.settled !== filters.settled) return false;
+      if (filters.engineAddress && row.engineAddress !== normalizeAddress(filters.engineAddress)) return false;
+      if (engineAddresses !== undefined && !engineAddresses.has(row.engineAddress)) return false;
       return true;
     });
   }

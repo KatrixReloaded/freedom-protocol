@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { Address, Hex } from "viem";
 import { MemoryRepository } from "../src/db/memory.js";
 import { EventProcessor } from "../src/indexer/eventProcessor.js";
 import { createServer } from "../src/http/server.js";
-import { listingPrimaryKey, seriesPrimaryKey } from "../src/keys.js";
+import { deriveSeriesId, listingPrimaryKey, seriesPrimaryKey } from "../src/keys.js";
 import {
   confidentialEngine,
   engineAddress,
@@ -16,10 +17,17 @@ import {
   testConfig,
   bridgeConfig,
   keeperPrivateKey,
+  maturityTimestamp,
   oracleAdapterAddress,
+  quoteToken,
+  stableToken,
   unshieldRequestedLog,
   userAddress,
 } from "./helpers.js";
+
+function testAddress(value: number): Address {
+  return `0x${value.toString(16).padStart(40, "0")}` as Address;
+}
 
 describe("routes", () => {
   it("serves series, listings, user listings, and public position activity", async () => {
@@ -80,6 +88,61 @@ describe("routes", () => {
     await app.close();
   });
 
+  it("scopes market listing discovery to configured matching engines", async () => {
+    const repo = new MemoryRepository();
+    await repo.initializeConfig(testConfig);
+    const processor = new EventProcessor(repo);
+    await processor.processFactoryLog(31337, publicFactory, seriesCreatedLog());
+    await processor.processMatchingEngineLog(31337, confidentialEngine, listingCreatedLog());
+
+    const oldEngine = testAddress(22);
+    await repo.upsertListingCreated({
+      chainId: 31337,
+      contractAddress: oldEngine,
+      blockNumber: 21n,
+      transactionHash: `0x${"09".repeat(32)}` as Hex,
+      logIndex: 0,
+      listingId: 99n,
+      seller: userAddress,
+      token: stableToken,
+      quoteToken,
+      strikePrice: 3000n,
+      maturityTimestamp,
+      engine: { ...confidentialEngine, address: oldEngine },
+      seriesId,
+      factoryAddress,
+      tokenSide: "P",
+    });
+
+    const app = createServer(
+      { ...testConfig, chains: [{ ...testConfig.chains[0], rpcUrl: "http://127.0.0.1:1" }] },
+      repo,
+    );
+
+    const activeListings = await app.inject({
+      method: "GET",
+      url: "/markets/listings?chainId=31337&mode=confidential&active=true",
+    });
+    expect(activeListings.statusCode).toBe(200);
+    expect(activeListings.json().map((listing: { engineAddress: Address }) => listing.engineAddress)).toEqual([
+      engineAddress,
+    ]);
+
+    const oldListing = await app.inject({
+      method: "GET",
+      url: `/markets/listings?chainId=31337&mode=confidential&active=true&engineAddress=${oldEngine}`,
+    });
+    expect(oldListing.json().map((listing: { engineAddress: Address }) => listing.engineAddress)).toEqual([oldEngine]);
+
+    const userListings = await app.inject({
+      method: "GET",
+      url: `/markets/user/${userAddress}/listings?chainId=31337&mode=confidential`,
+    });
+    expect(userListings.json()).toHaveLength(2);
+
+    await app.close();
+  });
+
   it("keeps matured and settled token listings visible by default", async () => {
     const repo = new MemoryRepository();
     await repo.initializeConfig(testConfig);
@@ -123,6 +186,77 @@ describe("routes", () => {
 
     const settledFilter = await app.inject({ method: "GET", url: "/markets/listings?settled=true" });
     expect(settledFilter.json()).toHaveLength(1);
+
+    await app.close();
+  });
+
+  it("filters active series by timestamp and settlement state, then sorts by maturity and strike", async () => {
+    const repo = new MemoryRepository();
+    await repo.initializeConfig(testConfig);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    let logIndex = 0;
+
+    async function upsertSeries(strikePrice: bigint, maturityTimestamp: bigint) {
+      const currentLogIndex = logIndex++;
+      const currentSeriesId = deriveSeriesId(strikePrice, maturityTimestamp);
+      await repo.upsertSeriesCreated({
+        chainId: 31337,
+        contractAddress: factoryAddress,
+        blockNumber: 100n + BigInt(currentLogIndex),
+        transactionHash: `0x${(currentLogIndex + 1).toString(16).padStart(64, "0")}` as Hex,
+        logIndex: currentLogIndex,
+        seriesId: currentSeriesId,
+        strikePrice,
+        maturityTimestamp,
+        stableToken: testAddress(100 + currentLogIndex),
+        upToken: testAddress(200 + currentLogIndex),
+        factory: publicFactory,
+      });
+      return currentSeriesId;
+    }
+
+    await upsertSeries(4_000n, now + 2_000n);
+    await upsertSeries(4_000n, now + 1_000n);
+    await upsertSeries(3_000n, now + 1_000n);
+    const settledFuture = await upsertSeries(2_500n, now + 500n);
+    await upsertSeries(1_000n, now - 1n);
+    await repo.upsertSeriesSettled({
+      chainId: 31337,
+      contractAddress: factoryAddress,
+      blockNumber: 200n,
+      transactionHash: `0x${"ff".repeat(32)}` as Hex,
+      logIndex: 99,
+      seriesId: settledFuture,
+      oraclePrice: 3_000n,
+      stablePayout: 1_000_000n,
+      upPayout: 0n,
+    });
+
+    const app = createServer(
+      { ...testConfig, chains: [{ ...testConfig.chains[0], rpcUrl: "http://127.0.0.1:1" }] },
+      repo,
+    );
+
+    const response = await app.inject({ method: "GET", url: "/series?status=active&chainId=31337&mode=public" });
+    expect(response.statusCode).toBe(200);
+    const activeSeries = response.json();
+
+    expect(activeSeries).toHaveLength(3);
+    expect(activeSeries.map((row: { strikePrice: string }) => row.strikePrice)).toEqual(["3000", "4000", "4000"]);
+    expect(activeSeries.map((row: { maturityTimestamp: string }) => row.maturityTimestamp)).toEqual([
+      (now + 1_000n).toString(),
+      (now + 1_000n).toString(),
+      (now + 2_000n).toString(),
+    ]);
+    expect(activeSeries.every((row: { active: boolean; settled: boolean }) => row.active && !row.settled)).toBe(true);
+    expect(activeSeries[0]).toMatchObject({
+      chainId: 31337,
+      mode: "public",
+      factoryAddress,
+      marketStatus: "active",
+    });
+    expect(activeSeries[0].stableToken).toMatch(/^0x/);
+    expect(activeSeries[0].upToken).toMatch(/^0x/);
 
     await app.close();
   });

@@ -3,9 +3,22 @@ import type { AppConfig, ChainConfig, EventGroup } from "../types.js";
 import type { Repository } from "../db/repository.js";
 import { EventProcessor, type IndexableLog } from "./eventProcessor.js";
 import { chunkBlockRanges, planCursorRange } from "./cursor.js";
+import { errorMessage } from "../errors.js";
 
 function makeClient(chain: ChainConfig): PublicClient {
   return createPublicClient({ transport: http(chain.rpcUrl) });
+}
+
+export function isSplittableGetLogsError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return (
+    message.includes("block range") ||
+    message.includes("range limit") ||
+    message.includes("range too") ||
+    message.includes("response size") ||
+    message.includes("too many results") ||
+    message.includes("query returned more")
+  );
 }
 
 export class MarketIndexer {
@@ -41,7 +54,11 @@ export class MarketIndexer {
     this.running = true;
     try {
       for (const chain of this.config.chains) {
-        await this.indexChain(chain);
+        try {
+          await this.indexChain(chain);
+        } catch (error) {
+          console.warn(`indexer failed for chain ${chain.chainId}: ${errorMessage(error)}`);
+        }
       }
     } finally {
       this.running = false;
@@ -121,6 +138,11 @@ export class MarketIndexer {
     processLog: (log: IndexableLog) => Promise<void>;
   }): Promise<void> {
     const cursor = await this.repository.getCursor(args.chain.chainId, args.address, args.eventGroup);
+    if (cursor === null) {
+      console.info(
+        `indexer starting ${args.chain.chainId}:${args.address}:${args.eventGroup} from configured startBlock ${args.startBlock}`,
+      );
+    }
     const plan = planCursorRange({
       lastIndexedBlock: cursor,
       startBlock: args.startBlock,
@@ -130,11 +152,49 @@ export class MarketIndexer {
     if (!plan.shouldIndex) return;
 
     for (const [fromBlock, toBlock] of chunkBlockRanges(plan.fromBlock, plan.toBlock, this.config.maxBlockRange)) {
-      const logs = await args.getLogs(fromBlock, toBlock);
-      for (const log of logs) {
-        await args.processLog(log);
-      }
-      await this.repository.setCursor(args.chain.chainId, args.address, args.eventGroup, toBlock);
+      const indexed = await this.indexBlockRange(args, fromBlock, toBlock);
+      if (!indexed) return;
     }
+  }
+
+  private async indexBlockRange(
+    args: {
+      chain: ChainConfig;
+      client: PublicClient;
+      address: Address;
+      eventGroup: EventGroup;
+      startBlock: bigint;
+      safeHead: bigint;
+      getLogs: (fromBlock: bigint, toBlock: bigint) => Promise<IndexableLog[]>;
+      processLog: (log: IndexableLog) => Promise<void>;
+    },
+    fromBlock: bigint,
+    toBlock: bigint,
+  ): Promise<boolean> {
+    let logs: IndexableLog[];
+    try {
+      logs = await args.getLogs(fromBlock, toBlock);
+    } catch (error) {
+      if (fromBlock < toBlock && isSplittableGetLogsError(error)) {
+        const midBlock = fromBlock + (toBlock - fromBlock) / 2n;
+        console.warn(
+          `indexer splitting ${args.chain.chainId}:${args.address}:${args.eventGroup} blocks ${fromBlock}-${toBlock}: ${errorMessage(error)}`,
+        );
+        const leftIndexed = await this.indexBlockRange(args, fromBlock, midBlock);
+        if (!leftIndexed) return false;
+        return this.indexBlockRange(args, midBlock + 1n, toBlock);
+      }
+
+      console.warn(
+        `indexer failed for ${args.chain.chainId}:${args.address}:${args.eventGroup} blocks ${fromBlock}-${toBlock}: ${errorMessage(error)}`,
+      );
+      return false;
+    }
+
+    for (const log of logs) {
+      await args.processLog(log);
+    }
+    await this.repository.setCursor(args.chain.chainId, args.address, args.eventGroup, toBlock);
+    return true;
   }
 }

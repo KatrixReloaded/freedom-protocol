@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { errorMessage } from "../src/errors.js";
 import { chunkBlockRanges, planCursorRange } from "../src/indexer/cursor.js";
+import { isSplittableGetLogsError } from "../src/indexer/poller.js";
 
 describe("cursor planning", () => {
   it("starts from configured start block when no cursor exists", () => {
@@ -26,5 +28,16 @@ describe("cursor planning", () => {
       [12n, 13n],
       [14n, 15n],
     ]);
+  });
+
+  it("identifies provider range errors without splitting rate limits", () => {
+    expect(isSplittableGetLogsError(new Error("Log response size exceeded; use a smaller block range"))).toBe(true);
+    expect(isSplittableGetLogsError(new Error("Too many request, try again later"))).toBe(false);
+  });
+
+  it("redacts RPC API keys from error messages", () => {
+    expect(errorMessage(new Error("URL: https://eth-sepolia.g.alchemy.com/v2/secret-key"))).toBe(
+      "URL: https://eth-sepolia.g.alchemy.com/v2/[redacted]",
+    );
   });
 });

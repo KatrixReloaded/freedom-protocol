@@ -3,7 +3,7 @@ import { PgRepository } from "./db/pg.js";
 import { createServer } from "./http/server.js";
 import { MarketIndexer } from "./indexer/poller.js";
 import { ViemBridgeFinalizeClient } from "./keeper/finalizeClient.js";
-import { UnconfiguredPublicDecryptService } from "./keeper/publicDecrypt.js";
+import { ZamaPublicDecryptService } from "./keeper/publicDecrypt.js";
 import { ViemSettlementClient } from "./keeper/settlementClient.js";
 import { SettlementKeeper } from "./keeper/settlementKeeper.js";
 import { UnshieldKeeper } from "./keeper/unshieldKeeper.js";
@@ -19,7 +19,7 @@ await indexer.start();
 const keeper = new UnshieldKeeper(
   config,
   repository,
-  new UnconfiguredPublicDecryptService(),
+  new ZamaPublicDecryptService(config),
   new ViemBridgeFinalizeClient(config),
 );
 await keeper.start();

@@ -599,6 +599,10 @@ export class PgRepository implements Repository {
     if (filters.strike) add("strike_price = ?", filters.strike);
     if (filters.maturityTimestamp) add("maturity_timestamp = ?", filters.maturityTimestamp);
     if (filters.settled !== undefined) add("settled = ?", filters.settled);
+    if (filters.status === "active") {
+      add("maturity_timestamp > ?", Math.floor(Date.now() / 1000));
+      add("settled = ?", false);
+    }
     const result = await this.pool.query(
       `select * from series ${where.length ? `where ${where.join(" and ")}` : ""} order by maturity_timestamp, strike_price, factory_address`,
       values,
@@ -645,6 +649,11 @@ export class PgRepository implements Repository {
     if (filters.active !== undefined) add("market_listings.active = ?", filters.active);
     if (filters.seller) add("market_listings.seller = ?", normalizeAddress(filters.seller));
     if (filters.settled !== undefined) add("s.settled = ?", filters.settled);
+    if (filters.engineAddress) add("market_listings.engine_address = ?", normalizeAddress(filters.engineAddress));
+    if (filters.engineAddresses !== undefined) {
+      if (filters.engineAddresses.length === 0) return [];
+      add("market_listings.engine_address = any(?)", filters.engineAddresses.map((address) => normalizeAddress(address)));
+    }
     const result = await this.pool.query(
       `select
         market_listings.*,

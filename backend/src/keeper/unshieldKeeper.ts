@@ -3,10 +3,7 @@ import type { AppConfig } from "../types.js";
 import type { Repository } from "../db/repository.js";
 import type { BridgeFinalizeClient } from "./finalizeClient.js";
 import type { PublicDecryptService } from "./publicDecrypt.js";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+import { errorMessage } from "../errors.js";
 
 function isAlreadyFinalizedError(message: string): boolean {
   return /AlreadyFinalized|already finalized|request.*finalized/i.test(message);

@@ -199,6 +199,7 @@ export interface SeriesFilters {
   strike?: string;
   maturityTimestamp?: string;
   settled?: boolean;
+  status?: "active";
 }
 
 export interface ListingFilters {
@@ -209,6 +210,8 @@ export interface ListingFilters {
   active?: boolean;
   seller?: Address;
   settled?: boolean;
+  engineAddress?: Address;
+  engineAddresses?: Address[];
 }
 
 export interface BridgeRequestFilters {

@@ -27,6 +27,27 @@ function makeClients(chains: ChainConfig[]): Map<number, PublicClient> {
   return new Map(chains.map((chain) => [chain.chainId, createPublicClient({ transport: http(chain.rpcUrl) })]));
 }
 
+function configuredListingEngines(config: AppConfig, chainId?: number, mode?: ListingFilters["mode"]): Address[] {
+  const addresses = new Set<Address>();
+  for (const chain of config.chains) {
+    if (chainId !== undefined && chain.chainId !== chainId) continue;
+    for (const engine of chain.matchingEngines) {
+      if (mode && engine.mode !== mode) continue;
+      addresses.add(normalizeAddress(engine.address));
+    }
+  }
+  return [...addresses];
+}
+
+function withSeriesStatus<T extends { maturityTimestamp: string; settled: boolean }>(series: T) {
+  const active = BigInt(series.maturityTimestamp) > BigInt(Math.floor(Date.now() / 1000)) && !series.settled;
+  return {
+    ...series,
+    active,
+    marketStatus: series.settled ? "settled" : active ? "active" : "matured",
+  };
+}
+
 export function createServer(config: AppConfig, repository: Repository): FastifyInstance {
   const app = Fastify({ logger: true, routerOptions: { maxParamLength: 256 } });
   const clients = makeClients(config.chains);
@@ -55,8 +76,10 @@ export function createServer(config: AppConfig, repository: Repository): Fastify
       strike: request.query.strike,
       maturityTimestamp: request.query.maturityTimestamp,
       settled: optionalBoolean(request.query.settled),
+      status: request.query.status === "active" ? "active" : undefined,
     };
-    return repository.listSeries(filters);
+    const series = await repository.listSeries(filters);
+    return series.map(withSeriesStatus);
   });
 
   app.get<{ Params: { id: string } }>("/series/:id", async (request, reply) => {
@@ -66,14 +89,19 @@ export function createServer(config: AppConfig, repository: Repository): Fastify
   });
 
   app.get<{ Querystring: Record<string, string> }>("/markets/listings", async (request) => {
+    const chainId = optionalNumber(request.query.chainId);
+    const mode = request.query.mode as ListingFilters["mode"];
+    const engineAddress = optionalAddress(request.query.engineAddress);
     const filters: ListingFilters = {
-      chainId: optionalNumber(request.query.chainId),
+      chainId,
       seriesId: request.query.seriesId as ListingFilters["seriesId"],
       side: request.query.side as ListingFilters["side"],
-      mode: request.query.mode as ListingFilters["mode"],
+      mode,
       active: optionalBoolean(request.query.active),
       seller: optionalAddress(request.query.seller),
       settled: optionalBoolean(request.query.settled),
+      engineAddress,
+      engineAddresses: engineAddress ? undefined : configuredListingEngines(config, chainId, mode),
     };
     return repository.listListings(filters);
   });

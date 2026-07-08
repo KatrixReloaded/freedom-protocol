@@ -26,6 +26,7 @@ export const publicFactoryAbi = [
       { name: "user", type: "address", indexed: true },
       { name: "seriesId", type: "bytes32", indexed: true },
       { name: "amount", type: "uint256", indexed: false },
+      { name: "payoutAsset", type: "address", indexed: true },
     ],
   },
   {
@@ -45,6 +46,7 @@ export const publicFactoryAbi = [
       { name: "user", type: "address", indexed: true },
       { name: "seriesId", type: "bytes32", indexed: true },
       { name: "claim", type: "uint256", indexed: false },
+      { name: "payoutAsset", type: "address", indexed: true },
     ],
   },
 ] as const;

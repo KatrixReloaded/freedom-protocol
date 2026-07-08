@@ -1,10 +1,7 @@
 import type { AppConfig, SeriesRow } from "../types.js";
 import type { Repository } from "../db/repository.js";
 import type { SettlementClient } from "./settlementClient.js";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+import { errorMessage } from "../errors.js";
 
 export class SettlementKeeper {
   private timer: NodeJS.Timeout | null = null;

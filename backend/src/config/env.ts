@@ -74,12 +74,50 @@ function parseChains(json: string | undefined): ChainConfig[] {
       {
         chainId: 11155111,
         name: "sepolia",
-        rpcUrl: "https://sepolia.example.invalid",
+        rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
         confirmationDepth: 12,
+        cWethAddress: "0x46208622DA27d91db4f0393733C8BA082ed83158",
+        oracleAdapter: "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
         settlementKeeperEnabled: false,
-        factories: [],
-        matchingEngines: [],
-        bridges: [],
+        settlementKeeperMinConfirmations: 12,
+        factories: [
+          {
+            address: "0x1c98aF677B9680c6A94dF4687bF454648A32e5e2",
+            mode: "public",
+            collateralSymbol: "WETH",
+            collateralAddress: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+            oracleAdapter: "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+            startBlock: 11228476n,
+          },
+          {
+            address: "0xb1EB5165Bc03847C8789f9b06f121a5Da3ec387c",
+            mode: "confidential",
+            collateralSymbol: "cWETH",
+            collateralAddress: "0x46208622DA27d91db4f0393733C8BA082ed83158",
+            oracleAdapter: "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+            startBlock: 11228476n,
+          },
+        ],
+        matchingEngines: [
+          {
+            address: "0x4Ac50Eb419cE50dCa6940fF90bFa7DA42fA30Ca9",
+            mode: "confidential",
+            factoryAddress: "0xb1EB5165Bc03847C8789f9b06f121a5Da3ec387c",
+            cWethAddress: "0x46208622DA27d91db4f0393733C8BA082ed83158",
+            startBlock: 11228476n,
+          },
+        ],
+        bridges: [
+          {
+            address: "0xea54b756D2586394029A2f4fBFAe024766E8aaf7",
+            publicFactory: "0x1c98aF677B9680c6A94dF4687bF454648A32e5e2",
+            confidentialFactory: "0xb1EB5165Bc03847C8789f9b06f121a5Da3ec387c",
+            startBlock: 11228476n,
+            keeperEnabled: false,
+            minConfirmationsBeforeFinalize: 12,
+          },
+        ],
+        fheConfig: { relayerUrl: "https://relayer.testnet.zama.org" },
       },
     ];
   }

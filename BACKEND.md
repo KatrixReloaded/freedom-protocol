@@ -87,6 +87,9 @@ Rules:
 - `maturityTimestamp` is a uint64 Unix timestamp aligned to a 10-minute interval for the PoC.
 - P/N token decimals are 6.
 - `SCALE = 1_000_000`.
+- Public `Split.amount` and `Merge.amount` are 6-decimal option-token units.
+  Public `Redeemed.claim` is 18-decimal collateral base units for the emitted
+  payout asset.
 
 ## Confidential Deposit Boundary
 

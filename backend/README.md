@@ -74,6 +74,10 @@ Public position responses include:
 Event activity is not treated as complete when tokens can transfer outside
 indexed factory events.
 
+Public event amounts are exposed as raw integer strings. `Split.amount` and
+`Merge.amount` are 6-decimal option-token units; `Redeemed.claim` is
+18-decimal collateral base units for the configured payout asset.
+
 Confidential balances are not tracked or inferred. Confidential APIs expose
 only public series/listing/status metadata.
 
