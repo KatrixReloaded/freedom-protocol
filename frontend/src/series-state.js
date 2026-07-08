@@ -1,4 +1,4 @@
-import { ANVIL_CHAIN_ID, MAX_STRIKE, STRIKE_TICK, ZERO_ADDRESS, chainSupportsMode, chainsForMode } from "./config.js";
+import { ANVIL_CHAIN_ID, FALLBACK_ETH_PRICE, STRIKE_TICK, ZERO_ADDRESS, chainSupportsMode, chainsForMode } from "./config.js";
 import {
   isTenMinuteMaturity,
   maturityTimestamp as toMaturityTimestamp,
@@ -37,15 +37,14 @@ function createSeriesState({ state }) {
     if (state.mode === "confidential") {
       return { chain, mode: "confidential", collateral: "cWETH", ...(chain?.confidential || {}) };
     }
-    const publicConfig = chain?.public?.[state.form.collateral] || {};
-    return { chain, mode: "public", collateral: state.form.collateral, ...publicConfig };
+    const publicConfig = chain?.public || {};
+    const paymentAsset = publicPaymentAsset(publicConfig);
+    return { chain, mode: "public", collateral: publicConfig.collateralSymbol || "WETH", paymentAsset, ...publicConfig };
   }
 
   function modeFactoryAddress(chain) {
     if (state.mode === "confidential") return chain?.confidential?.factory || "";
-    const selected = chain?.public?.[state.form.collateral]?.factory;
-    if (selected) return selected;
-    return Object.values(chain?.public || {}).find((entry) => entry?.factory)?.factory || "";
+    return chain?.public?.factory || "";
   }
 
   function maturityTimestamp(timestamp = state.form.maturity) {
@@ -59,11 +58,12 @@ function createSeriesState({ state }) {
     return "";
   }
 
-  function strikeValidation() {
+  function strikeValidation({ capToEthPrice = true } = {}) {
     const strike = Number(state.form.strike);
+    const max = maxStrike();
     if (!Number.isInteger(strike) || strike <= 0) return "Strike must be positive.";
     if (strike % STRIKE_TICK !== 0) return "Strike must be a multiple of $50.";
-    if (strike > MAX_STRIKE) return `Strike cannot exceed 75% of current ETH price. Max strike is $${MAX_STRIKE}.`;
+    if (capToEthPrice && strike > max) return `Strike cannot exceed 50% of current ETH price. Max strike is $${max}.`;
     return "";
   }
 
@@ -72,7 +72,7 @@ function createSeriesState({ state }) {
     if (!series) return "Not created";
     if (series.exists === false) return "Not created";
     if (Number(series.settled)) return "Settled";
-    if (Number(series.maturity) <= now) return "Matured";
+    if (Number(series.maturityTimestamp || series.maturity) <= now) return "Matured";
     return "Active";
   }
 
@@ -118,22 +118,26 @@ function createSeriesState({ state }) {
 
   function collateralSymbol(series = selectedSeries()) {
     if (state.mode === "confidential") return "cWETH";
-    if (state.form.collateral === "WETH") return "WETH";
-    if (String(series?.mode || "").toUpperCase() === "ETH") return "ETH";
-    return isNativeToken(series?.collateral_token) ? "ETH" : "WETH";
+    return publicPaymentAsset();
   }
 
   function publicCollateralConfig() {
     const config = activeFactoryConfig();
-    if (state.form.collateral === "ETH") return { symbol: "ETH", decimals: 18, native: true, token: "", factory: config.factory };
+    if (publicPaymentAsset(config) === "ETH") return { symbol: "ETH", decimals: 18, native: true, token: "", factory: config.factory };
     const token = config.collateralToken || "";
     return {
-      symbol: config.collateralSymbol || "WETH",
+      symbol: "WETH",
       decimals: Number(config.collateralDecimals || 18),
       native: false,
       token: isNativeToken(token) ? "" : token,
       factory: config.factory
     };
+  }
+
+  function publicPaymentAsset(config = activeFactoryConfig()) {
+    const supported = Array.isArray(config?.paymentAssets) && config.paymentAssets.length ? config.paymentAssets : ["ETH", "WETH"];
+    const requested = String(state.form.collateral || "ETH").toUpperCase();
+    return supported.includes(requested) ? requested : supported[0] || "ETH";
   }
 
   function parseCollateralUnits(value) {
@@ -142,16 +146,35 @@ function createSeriesState({ state }) {
   }
 
   function strikeInput(value) {
-    return sanitizeStrikeInput(value, MAX_STRIKE);
+    return sanitizeStrikeInput(value, state.route === "/settle" ? Number.MAX_SAFE_INTEGER : maxStrike());
+  }
+
+  function ethPrice() {
+    const raw = BigInt(state.oracleRead.price || 0);
+    if (raw <= 0n) return FALLBACK_ETH_PRICE;
+    if (raw > 1_000_000_000n) return Number(raw) / 100_000_000;
+    return Number(raw);
+  }
+
+  function defaultStrike() {
+    const halfPrice = Math.floor(ethPrice() / 2);
+    return Math.floor(halfPrice / STRIKE_TICK) * STRIKE_TICK;
+  }
+
+  function maxStrike() {
+    return defaultStrike();
   }
 
   return {
     activeFactoryConfig,
     collateralSymbol,
     currentChainConfig,
+    defaultStrike,
+    ethPrice,
     isWrongNetwork,
     maturityTimestamp,
     maturityValidation,
+    maxStrike,
     modeChainIds,
     parseCollateralUnits,
     publicCollateralConfig,

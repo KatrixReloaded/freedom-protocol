@@ -1,9 +1,11 @@
 import { DEFAULT_MATURITY, DEFAULT_STRIKE, loadDeploymentConfig, normalizeRoute } from "./config.js";
 
 function createInitialState(pathname = location.pathname) {
+  const route = normalizeRoute(pathname);
+  const storedMode = localStorage.getItem("freedom.mode") || "public";
   return {
-    route: normalizeRoute(pathname),
-    mode: localStorage.getItem("freedom.mode") || "public",
+    route,
+    mode: route === "/trade" ? "confidential" : storedMode,
     deployments: loadDeploymentConfig(),
     loading: true,
     wallet: {
@@ -37,16 +39,37 @@ function createInitialState(pathname = location.pathname) {
     },
     form: {
       collateral: "ETH",
+      payoutAsset: "ETH",
       amount: "",
       wrapAmount: "",
       shieldAmount: "",
+      tradeSellPAmount: "",
+      tradeSellNAmount: "",
+      tradeCreateSide: "P",
+      tradeSellAmount: "",
+      tradeMinReceive: "",
+      tradeMinReceiveAuto: true,
+      tradeQuoteToken: "cWETH",
+      tradeCreateQuoteToken: "cWETH",
+      tradeFillQuoteToken: "cWETH",
+      tradeFillPayment: "",
+      tradeFillExpected: "",
+      tradeFillExpectedAuto: true,
+      tradeIntent: "Buy",
+      tradeSelectedListingId: "",
+      tradeSideFilter: "All",
+      tradeActiveFilter: "Active",
       strike: DEFAULT_STRIKE,
+      strikeAuto: true,
       maturity: DEFAULT_MATURITY,
       side: "P",
-      marketFilter: "All"
+      marketFilter: "All",
+      selectedActiveSeriesKey: ""
     },
     tx: [],
+    trade: { status: "idle", listings: [], userListings: [], error: "", lastUpdated: 0 },
     bridgeRequests: { status: "idle", rows: [], active: null, error: "", lastUpdated: 0 },
+    activeSeries: { status: "idle", rows: [], error: "", lastUpdated: 0 },
     toast: null,
     fhe: { status: "idle", error: "" },
     reveal: {},

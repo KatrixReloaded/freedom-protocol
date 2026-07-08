@@ -53,7 +53,7 @@ function button(label, options = {}) {
 }
 
 function segmented(name, values, selected, onChange) {
-  return h("div", { class: "segmented", role: "radiogroup", "aria-label": name }, [
+  return h("div", { class: "segmented", role: "radiogroup", "aria-label": name, style: `--count: ${values.length}` }, [
     ...values.map((value) =>
       h(
         "button",
@@ -67,7 +67,7 @@ function segmented(name, values, selected, onChange) {
         value
       )
     ),
-    h("span", { class: "segmented-indicator", style: `--index: ${Math.max(values.indexOf(selected), 0)}; --count: ${values.length}` })
+    h("span", { class: "segmented-indicator", style: `--index: ${Math.max(values.indexOf(selected), 0)}` })
   ]);
 }
 

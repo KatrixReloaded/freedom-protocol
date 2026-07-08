@@ -16,21 +16,35 @@ function cwethAuthLabel(factory) {
 }
 
 async function authorizeCWeth({ factory, cWETH, vault, userAddress, amount, sendTx, fhe }) {
-  const mode = cwethAuthMode(factory);
+  return authorizeConfidentialToken({
+    token: cWETH,
+    vault,
+    userAddress,
+    amount,
+    sendTx,
+    fhe,
+    mode: cwethAuthMode(factory),
+    operatorUntil: factory.operatorUntil
+  });
+}
+
+async function authorizeConfidentialToken({ token, vault, userAddress, amount, sendTx, fhe, mode = "allowance", operatorUntil = "" }) {
+  mode = ["allowance", "operator", "none"].includes(String(mode || "").toLowerCase()) ? String(mode).toLowerCase() : "allowance";
   if (mode === "none") return { skipped: true, mode };
   if (!isAddress(vault)) throw new Error("Factory vault is not configured.");
+  if (!isAddress(token)) throw new Error("Quote token is not configured.");
 
   if (mode === "operator") {
-    const until = BigInt(factory.operatorUntil || defaultOperatorUntil());
+    const until = BigInt(operatorUntil || defaultOperatorUntil());
     const data = encodeCall(SELECTORS.setOperator, [
       { type: "address", value: vault },
       { type: "uint", value: until }
     ]);
-    return { mode, hash: await sendTx(cWETH, data, 0n) };
+    return { mode, hash: await sendTx(token, data, 0n) };
   }
 
   const encrypted = await encryptAmount({
-    contractAddress: cWETH,
+    contractAddress: token,
     userAddress,
     value: amount,
     fhe
@@ -40,11 +54,11 @@ async function authorizeCWeth({ factory, cWETH, vault, userAddress, amount, send
     { type: "bytes32", value: encrypted.handle },
     { type: "bytes", value: encrypted.proof }
   ]);
-  return { mode, hash: await sendTx(cWETH, data, 0n) };
+  return { mode, hash: await sendTx(token, data, 0n) };
 }
 
 function defaultOperatorUntil() {
   return Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
 }
 
-export { authorizeCWeth, cwethAuthLabel, cwethAuthMode };
+export { authorizeCWeth, authorizeConfidentialToken, cwethAuthLabel, cwethAuthMode };

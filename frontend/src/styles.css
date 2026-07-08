@@ -110,6 +110,21 @@ a {
   gap: 6px;
 }
 
+.primary-nav {
+  position: relative;
+}
+
+.nav-mode {
+  position: absolute;
+  right: calc(100% + 14px);
+  width: 248px;
+  margin-right: 0;
+}
+
+.nav-mode .segmented {
+  width: 100%;
+}
+
 .primary-nav a,
 .bottom-nav a {
   position: relative;
@@ -252,6 +267,12 @@ small {
   font-size: 11px;
 }
 
+.panel-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status {
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -296,8 +317,26 @@ small {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .series-panel .form-grid {
-  align-items: end;
+  align-items: start;
+}
+
+.series-panel .field,
+.series-panel .metric,
+.series-panel input {
+  min-width: 0;
+}
+
+.series-datetime-grid {
+  grid-template-columns: minmax(110px, 0.8fr) minmax(220px, 1.2fr);
+}
+
+.series-datetime-grid .series-trailing {
+  grid-column: 1 / -1;
 }
 
 .field {
@@ -415,6 +454,30 @@ button:disabled {
   filter: grayscale(1);
 }
 
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--yellow);
+  background: transparent;
+  transform: none;
+}
+
+.refresh-icon.spinning {
+  animation: spin var(--slow) linear infinite;
+}
+
 .button.primary {
   color: #080808;
   background: var(--yellow);
@@ -467,6 +530,12 @@ button:disabled {
   transition: left var(--normal) var(--ease);
 }
 
+.market-filter-grid .field,
+.market-filter-grid .segmented {
+  min-width: 0;
+  width: 100%;
+}
+
 .receive-box,
 .estimate,
 .empty,
@@ -484,6 +553,57 @@ button:disabled {
   gap: 9px;
   margin-top: 12px;
   padding: 12px;
+}
+
+.active-series-panel {
+  margin-top: 14px;
+}
+
+.active-series-list {
+  display: grid;
+  gap: 8px;
+}
+
+.active-series-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.7fr) minmax(180px, 1.2fr) minmax(160px, 1fr) minmax(90px, 0.55fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 0;
+  padding: 10px;
+  border-color: var(--border);
+  background: var(--panel-2);
+  text-align: left;
+}
+
+.active-series-row.selected {
+  border-color: var(--yellow-soft);
+  background: #171407;
+}
+
+.active-series-row.invalid {
+  border-color: rgba(255, 107, 107, 0.35);
+}
+
+.active-series-row > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.active-series-row small {
+  color: var(--text-muted);
+}
+
+.active-series-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-series-error {
+  grid-column: 1 / -1;
 }
 
 .receive-box > div,
@@ -583,6 +703,11 @@ summary {
   color: var(--text-muted);
 }
 
+.payout-grid small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .drawer-actions {
   display: flex;
   gap: 8px;
@@ -627,6 +752,12 @@ summary {
   }
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .notice {
   display: flex;
   justify-content: space-between;
@@ -638,6 +769,56 @@ summary {
 
 .market {
   min-width: 0;
+}
+
+.trade-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.trade-row {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  padding: 12px;
+}
+
+.trade-row.selected {
+  border-color: var(--yellow);
+}
+
+.trade-row-main,
+.trade-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.trade-row-main {
+  justify-content: space-between;
+}
+
+.trade-row-main p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+}
+
+.trade-row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.trade-details,
+.trade-form,
+.trade-fill {
+  margin-top: 8px;
+}
+
+.trade-form .field:last-child {
+  grid-column: 1 / -1;
 }
 
 table {
@@ -771,6 +952,10 @@ tbody tr:hover {
   border-color: var(--danger);
 }
 
+.tx-link {
+  color: var(--yellow);
+}
+
 .footer-tools {
   margin-top: 20px;
   color: var(--text-muted);
@@ -869,6 +1054,7 @@ tbody tr:hover {
   .layout.trade,
   .layout.settle,
   .form-grid.three,
+  .active-series-row,
   .api-config,
   .balance-grid,
   .payout-grid {

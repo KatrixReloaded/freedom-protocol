@@ -92,7 +92,8 @@ Public mode is the default.
 
 Use public mode for normal EVM UX:
 
-- Collateral: ETH or WETH, depending on selected factory/deployment.
+- Collateral/reserves: WETH.
+- Payment asset: ETH or WETH against the same public factory.
 - Option tokens: standard ERC-20 P and N tokens.
 - Balances: plaintext.
 - Trading: normal visible orderbook/DEX-style market.
@@ -378,12 +379,8 @@ collateral, and receives equal P + N tokens.
 
 ### Public Deposit
 
-User can deposit:
-
-- ETH, if a native public factory is deployed.
-- WETH, if a WETH public factory is deployed.
-
-If both are available, show a compact collateral segmented control:
+User can deposit ETH or WETH into the same WETH-collateral public factory.
+Show a compact payment segmented control:
 
 ```text
 ETH | WETH
@@ -395,7 +392,7 @@ Primary form:
 Deposit
 
 Mode: Public | Confidential
-Collateral: ETH | WETH
+Pay with: ETH | WETH
 Amount: [             ] [Max]
 Strike: [select]
 Maturity: [select]
@@ -410,20 +407,32 @@ N upETH-[strike]-[maturity]        [amount]
 Public transaction flow:
 
 ```text
-1. Validate strikePrice as a positive multiple of 50.
+1. Validate strikePrice as a positive multiple of 50 and not above 50% of the
+   current ETH/USD price when the feed is available.
 2. Use the selected 10-minute `maturityTimestamp`.
 3. Read factory registry for the selected series.
 4. If series exists:
    use returned P/N token addresses.
 5. If series does not exist:
    show predicted P/N token addresses.
-6. If collateral is native ETH:
+6. If payment asset is native ETH:
    PublicOptionFactory.createSeriesAndSplit(..., { value: amount })
    or split(...) for already-created series.
-7. If collateral is WETH/ERC20:
+7. If payment asset is WETH/ERC20:
    collateral.approve(factory.vault(), amount), when needed.
    PublicOptionFactory.createSeriesAndSplit(...) or split(...).
 ```
+
+Public deposit amounts are entered as 18-decimal ETH/WETH collateral. The
+factory mints option units as:
+
+```text
+optionAmount = collateralRaw / 1e12
+```
+
+The UI must reject public deposits below `0.000001` ETH/WETH and deposits not
+divisible by `0.000001` ETH/WETH. The P/N receive preview displays the resulting
+option amount, not the 18-decimal collateral raw amount.
 
 After success:
 
@@ -708,8 +717,8 @@ Keep settlement math available in a compact expandable details row:
 
 ```text
 Oracle price:
-P payout:
-N payout:
+P payout rate:
+N payout rate:
 1 P + 1 N = 1 collateral
 ```
 
@@ -722,7 +731,8 @@ Claim behavior:
 - User can claim against P, N, or both if they hold both.
 - If the contract `redeem` function burns the user's full balance for the
   series, make that explicit before transaction submission.
-- Show estimated ETH/WETH payout before the user signs.
+- Show estimated WETH reserve payout and let the user choose ETH or WETH payout
+  before signing.
 
 Public flow:
 
@@ -732,7 +742,8 @@ Public flow:
 3. Read user's P and N balances.
 4. Check maturity and settlement state.
 5. For settled series, calculate estimated claim from payout rates.
-6. Submit PublicOptionFactory.redeem(strikePrice, maturityTimestamp).
+6. Submit PublicOptionFactory.redeem(strikePrice, maturityTimestamp) for ETH
+   payout, or redeemToWeth(strikePrice, maturityTimestamp) for WETH payout.
 ```
 
 Chainlink adapter settlement:
@@ -899,19 +910,23 @@ Rules:
 The frontend can be configured from build/Vercel env or runtime `/env.js`.
 
 ```text
+FREEDOM_SEPOLIA_PUBLIC_FACTORY=0xfCEdAb313542d11cd859fd586218C38d7669F6a5
+# Backward-compatible aliases, if present:
 FREEDOM_SEPOLIA_PUBLIC_ETH_FACTORY=
 FREEDOM_SEPOLIA_PUBLIC_WETH_FACTORY=
 FREEDOM_SEPOLIA_WETH_TOKEN=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14
 
-FREEDOM_SEPOLIA_CONFIDENTIAL_FACTORY=
+FREEDOM_SEPOLIA_CONFIDENTIAL_FACTORY=0x1774cAc50c97aFbed216E3CF372DC5F612ba3D49
+FREEDOM_SEPOLIA_CONFIDENTIAL_MATCHING_ENGINE=0xc951997fCb8F64ae27dad74f27295A8b3001d433
+FREEDOM_SEPOLIA_SERIES_POOL_IMPLEMENTATION=0x5E525Be04B3B4A2471514B13202Efe98a702D4b0
 FREEDOM_SEPOLIA_CWETH_TOKEN=0x46208622DA27d91db4f0393733C8BA082ed83158
 FREEDOM_SEPOLIA_CWETH_AUTH_MODE=operator # allowance | operator | none
 FREEDOM_SEPOLIA_CWETH_OPERATOR_UNTIL=      # optional unix timestamp
 
 FREEDOM_ANVIL_SHIELD_BRIDGE=
-FREEDOM_SEPOLIA_SHIELD_BRIDGE=
+FREEDOM_SEPOLIA_SHIELD_BRIDGE=0x9d5372311820Ea27Ec9f607878282CD22D05fe3F
 FREEDOM_ANVIL_ORACLE_ADAPTER=
-FREEDOM_SEPOLIA_ORACLE_ADAPTER=
+FREEDOM_SEPOLIA_ORACLE_ADAPTER=0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e
 
 FREEDOM_ZAMA_GATEWAY_CHAIN_ID=10901
 FREEDOM_ZAMA_RELAYER_URL=https://relayer.testnet.zama.org

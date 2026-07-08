@@ -30,7 +30,7 @@ function envScript() {
 function fileFor(urlPath) {
   const clean = decodeURIComponent(urlPath.split("?")[0]);
   if (clean.startsWith("/src/")) return path.join(root, clean);
-  if (clean === "/" || clean === "/deposit" || clean === "/trade" || clean === "/settle") {
+  if (clean === "/" || clean === "/deposit" || clean === "/trade" || clean === "/settle" || clean === "/shield") {
     return path.join(root, "index.html");
   }
   return path.join(root, clean);

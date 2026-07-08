@@ -1,4 +1,4 @@
-import { POC_MATURITY_INTERVAL_SECONDS, SCALE, defaultPocMaturityTimestamp } from "./config.js";
+import { POC_MATURITY_INTERVAL_SECONDS, SCALE, STRIKE_TICK, defaultPocMaturityTimestamp } from "./config.js";
 
 function formatAddress(value) {
   if (!value || value.length < 12) return value || "Not connected";
@@ -81,7 +81,9 @@ function integerInput(value) {
 function strikeInput(value, maxStrike) {
   const cleaned = integerInput(value);
   if (!cleaned) return "";
-  return Number(cleaned) > maxStrike ? String(maxStrike) : cleaned;
+  const max = Number(maxStrike);
+  const cap = Number.isFinite(max) ? Math.floor(Math.floor(max) / STRIKE_TICK) * STRIKE_TICK : Number.MAX_SAFE_INTEGER;
+  return Number(cleaned) > cap ? String(cap) : cleaned;
 }
 
 function numericTextAttrs(extra = {}) {

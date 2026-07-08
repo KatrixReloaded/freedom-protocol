@@ -1,4 +1,4 @@
-import { ORACLE_ADAPTER_SELECTORS, SELECTORS, SHIELD_BRIDGE_EVENTS, SHIELD_BRIDGE_SELECTORS, WETH_SELECTORS } from "./config.js";
+import { MIN_PUBLIC_COLLATERAL_RAW, ORACLE_ADAPTER_SELECTORS, PUBLIC_COLLATERAL_OPTION_SCALE, SELECTORS, SHIELD_BRIDGE_EVENTS, SHIELD_BRIDGE_SELECTORS, WETH_SELECTORS } from "./config.js";
 import { addressCallData, decodeAddress, decodeBool, decodeUint, encodeCall, ethCall, isAddress, requireAddress, words } from "./abi.js";
 import { authorizeCWeth, cwethAuthLabel } from "./cweth-authorization.js";
 import { encryptAmount } from "./encryption.js";
@@ -18,6 +18,7 @@ function createProtocolActions(ctx) {
     selectedSeries,
     sendTx,
     setToast,
+    syncDefaultStrikeFromOracle,
     setTx,
     state,
     strikeValidation,
@@ -51,21 +52,41 @@ function createProtocolActions(ctx) {
     return [decodeAddress(out[0] || ""), decodeAddress(out[1] || "")];
   }
 
+  async function readContract(contract, data) {
+    if (window.ethereum) return ethCall(contract, data);
+    const rpcUrl = activeFactoryConfig().chain?.rpcUrl || "";
+    if (!rpcUrl) throw new Error("No wallet provider or read RPC configured.");
+    return rpcEthCall(rpcUrl, contract, data);
+  }
+
+  async function rpcEthCall(rpcUrl, to, data) {
+    requireAddress(to, "Contract address");
+    const response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_call",
+        params: [{ to, data }, "latest"]
+      })
+    });
+    if (!response.ok) throw new Error("Read RPC request failed.");
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error.message || "Read RPC call failed.");
+    return payload.result || "0x";
+  }
+
   async function readOptionalAddress(contract, selector) {
     try {
-      return decodeAddress(words(await ethCall(contract, selector))[0] || "");
+      return decodeAddress(words(await readContract(contract, selector))[0] || "");
     } catch (_error) {
       return "";
     }
   }
 
   async function refreshSelectedSeries() {
-    if (!window.ethereum) {
-      state.seriesRead = { ...state.seriesRead, status: "error", exists: false, error: "No wallet provider found for contract reads." };
-      render();
-      return;
-    }
-    const validation = strikeValidation() || maturityValidation();
+    const validation = strikeValidation({ capToEthPrice: state.route !== "/settle" }) || maturityValidation();
     if (validation) {
       state.seriesRead = { ...state.seriesRead, status: "error", exists: false, error: validation };
       render();
@@ -98,14 +119,14 @@ function createProtocolActions(ctx) {
         { type: "uint", value: strike },
         { type: "uint", value: maturity }
       ]);
-      const [seriesResult, oracle] = await Promise.all([ethCall(factory.factory, getSeriesData), readOptionalAddress(factory.factory, SELECTORS.oracle)]);
+      const [seriesResult, oracle] = await Promise.all([readContract(factory.factory, getSeriesData), readOptionalAddress(factory.factory, SELECTORS.oracle)]);
       const series = decodeSeriesResult(seriesResult);
       const oracleAdapter = oracleAdapterAddress(factory, oracle);
       if (series.exists) {
         state.seriesRead = { status: "ready", ...series, oracle, error: "" };
       } else {
         const prediction = decodeTwoAddresses(
-          await ethCall(
+          await readContract(
             factory.factory,
             encodeCall(SELECTORS.predictTokenAddresses, [
               { type: "uint", value: strike },
@@ -147,7 +168,7 @@ function createProtocolActions(ctx) {
     }
     state.oracleRead = { ...state.oracleRead, status: "loading", adapter, error: "" };
     try {
-      const result = await ethCall(adapter, ORACLE_ADAPTER_SELECTORS.latestEthUsdPrice);
+      const result = await readContract(adapter, ORACLE_ADAPTER_SELECTORS.latestEthUsdPrice);
       const out = words(result);
       if (out.length < 2) throw new Error("Oracle adapter unavailable.");
       const price = decodeUint(out[0] || "0");
@@ -160,6 +181,7 @@ function createProtocolActions(ctx) {
         updatedAt: updatedAt.toString(),
         error: ""
       };
+      syncDefaultStrikeFromOracle?.();
     } catch (error) {
       state.oracleRead = {
         status: "error",
@@ -264,9 +286,21 @@ function createProtocolActions(ctx) {
 
   async function readErc20Balance(token, owner, decimals = 6) {
     if (!isAddress(token) || !isAddress(owner)) return { status: "idle", value: "", raw: 0n, error: "" };
-    const result = await ethCall(token, encodeCall(SELECTORS.balanceOf, [{ type: "address", value: owner }]));
+    const result = await readContract(token, encodeCall(SELECTORS.balanceOf, [{ type: "address", value: owner }]));
     const raw = decodeUint(words(result)[0] || "0");
     return { status: "ready", value: formatTokenUnits(raw, decimals, 6), raw, error: "" };
+  }
+
+  async function readErc20Allowance(token, owner, spender) {
+    if (!isAddress(token) || !isAddress(owner) || !isAddress(spender)) return 0n;
+    const result = await readContract(
+      token,
+      encodeCall(SELECTORS.allowance, [
+        { type: "address", value: owner },
+        { type: "address", value: spender }
+      ])
+    );
+    return decodeUint(words(result)[0] || "0");
   }
 
   async function refreshOptionBalances() {
@@ -292,12 +326,17 @@ function createProtocolActions(ctx) {
   function actionBlocked(requiredAmountKey = "amount") {
     const amount = parseCollateralUnits(state.form[requiredAmountKey]);
     if (!state.wallet.connected) return "Connect wallet";
+    if (state.mode === "confidential" && !isAddress(state.wallet.account)) return "Wallet account is not ready.";
     if (isWrongNetwork()) return "Switch network";
     const validation = strikeValidation() || maturityValidation({ requireFuture: true });
     if (validation) return validation;
     if (!amount || amount <= 0n) return "Enter amount";
     const factory = activeFactoryConfig();
     if (!isAddress(factory.factory)) return "Factory address missing from env.";
+    const collateral = state.mode === "public" ? publicCollateralConfig() : null;
+    if (collateral && amount < MIN_PUBLIC_COLLATERAL_RAW) return `Minimum public deposit is 0.000001 ${collateral.symbol}.`;
+    if (collateral && amount % PUBLIC_COLLATERAL_OPTION_SCALE !== 0n) return `Amount must be divisible by 0.000001 ${collateral.symbol}.`;
+    if (collateral && !collateral.native && !isAddress(collateral.token)) return `${collateral.symbol} token is not configured on this chain.`;
     if (state.mode === "confidential" && !isAddress(factory.cWETH)) return "cWETH address missing from env.";
     if (state.seriesRead.status === "loading") return "Reading series";
     if (state.seriesRead.status === "error") return "Fix series";
@@ -310,22 +349,28 @@ function createProtocolActions(ctx) {
     return activeFactoryConfig().chain?.bridge || "";
   }
 
+  function publicMintAmountText(collateralRaw) {
+    const optionRaw = collateralRaw / PUBLIC_COLLATERAL_OPTION_SCALE;
+    return formatTokenUnits(optionRaw, 6, 6);
+  }
+
   async function runDeposit() {
     const amount = parseCollateralUnits(state.form.amount);
     const blocked = actionBlocked("amount");
-    if (blocked) return blocked === "Switch network" ? refreshWalletNetwork() : setToast(blocked);
+    if (blocked) return handleDepositBlocked(blocked);
 
     try {
       const factory = activeFactoryConfig();
-      const strike = BigInt(state.form.strike);
+      const strike = formUint(state.form.strike, "Strike");
       const maturityValue = BigInt(state.form.maturity);
       if (state.mode === "public") {
         const collateral = publicCollateralConfig();
-        const needsApproval = !collateral.native;
+        const vault = collateral.native ? "" : decodeAddress(words(await ethCall(factory.factory, SELECTORS.vault))[0] || "");
+        const allowance = collateral.native ? amount : await readErc20Allowance(collateral.token, state.wallet.account, vault);
+        const needsApproval = !collateral.native && allowance < amount;
         setTx([...(needsApproval ? [`Approve ${collateral.symbol}`] : []), state.seriesRead.exists ? "Deposit" : "Create series and deposit"]);
         let txIndex = 0;
         if (needsApproval) {
-          const vault = decodeAddress(words(await ethCall(factory.factory, SELECTORS.vault))[0] || "");
           const approval = {
             to: collateral.token,
             data: encodeCall(SELECTORS.approve, [
@@ -336,6 +381,7 @@ function createProtocolActions(ctx) {
           };
           updateTx(txIndex, { status: "submitted" });
           const hash = await sendTx(approval.to, approval.data, approval.value);
+          await waitForTransactionReceipt(hash);
           updateTx(txIndex++, { status: "confirmed", hash });
         }
         const data = state.seriesRead.exists
@@ -351,12 +397,16 @@ function createProtocolActions(ctx) {
             ]);
         updateTx(txIndex, { status: "submitted" });
         const hash = await sendTx(factory.factory, data, collateral.native ? amount : 0n);
+        await waitForTransactionReceipt(hash);
         updateTx(txIndex, { status: "confirmed", hash });
-        setToast(`Minted ${state.form.amount} P and N.`);
+        setToast(`Minted ${publicMintAmountText(amount)} P and N.`);
         await refreshSelectedSeries();
+        await refreshPublicCollateralBalance(true);
       } else {
         const cWETH = requireAddress(factory.cWETH, "cWETH");
         const vault = decodeAddress(words(await ethCall(factory.factory, SELECTORS.vault))[0] || "");
+        if (!isAddress(state.wallet.account)) throw new Error("Wallet account is not ready.");
+        if (!isAddress(vault)) throw new Error("Factory vault is not configured.");
         setTx(["Initialize FHE", cwethAuthLabel(factory), "Encrypt deposit amount", state.seriesRead.exists ? "Deposit cWETH" : "Create series and deposit cWETH"]);
         state.fhe = { status: "loading", error: "" };
         render();
@@ -396,6 +446,7 @@ function createProtocolActions(ctx) {
             ]);
         updateTx(3, { status: "submitted" });
         const hash = await sendTx(factory.factory, data, 0n);
+        await waitForTransactionReceipt(hash);
         updateTx(3, { status: "confirmed", hash });
         state.fhe = { status: "ready", error: "" };
         setToast("Encrypted deposit submitted.");
@@ -405,6 +456,20 @@ function createProtocolActions(ctx) {
       if (state.mode === "confidential") state.fhe = { status: "error", error: String(error?.message || error || "FHE SDK unavailable.") };
       markTxFailed(error.message);
     }
+  }
+
+  function formUint(value, label) {
+    const text = String(value || "").trim();
+    if (!/^\d+$/.test(text)) throw new Error(`${label} must be an integer.`);
+    return BigInt(text);
+  }
+
+  function handleDepositBlocked(message) {
+    if (state.mode === "confidential") {
+      state.fhe = { status: "error", error: message };
+      render();
+    }
+    return message === "Switch network" ? refreshWalletNetwork() : setToast(message);
   }
 
   async function runWrapWeth() {
@@ -418,6 +483,7 @@ function createProtocolActions(ctx) {
       setTx(["Wrap Sepolia ETH to WETH"]);
       updateTx(0, { status: "submitted" });
       const hash = await sendTx(collateral.token, WETH_SELECTORS.deposit, amount);
+      await waitForTransactionReceipt(hash);
       updateTx(0, { status: "confirmed", hash });
       state.form.wrapAmount = "";
       setToast("WETH wrapped.");
@@ -432,7 +498,7 @@ function createProtocolActions(ctx) {
     if (isWrongNetwork()) return refreshWalletNetwork();
     const bridge = activeBridgeAddress();
     if (!isAddress(bridge)) return setToast("ShieldBridge address missing from env.");
-    const validation = strikeValidation() || maturityValidation();
+    const validation = strikeValidation({ capToEthPrice: state.route !== "/settle" }) || maturityValidation();
     if (validation) return setToast(validation);
     const amount = parseUnits(state.form.shieldAmount || "", 6);
     if (!amount || amount <= 0n) return setToast("Enter shield amount.");
@@ -451,6 +517,7 @@ function createProtocolActions(ctx) {
       ]);
       updateTx(0, { status: "submitted" });
       const hash = await sendTx(bridge, data, 0n);
+      await waitForTransactionReceipt(hash);
       updateTx(0, { status: "confirmed", hash });
       if (state.mode === "confidential") {
         state.bridgeRequests = {
@@ -506,12 +573,12 @@ function createProtocolActions(ctx) {
   }
 
   async function waitForTransactionReceipt(hash) {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       const receipt = await window.ethereum
         .request({ method: "eth_getTransactionReceipt", params: [hash] })
         .catch(() => null);
       if (receipt) return receipt;
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
     }
     return null;
   }
@@ -523,17 +590,21 @@ function createProtocolActions(ctx) {
     if (!state.seriesRead.settled) return setToast("This series has not been settled yet.");
 
     try {
-      setTx([state.mode === "public" ? "Claim collateral" : "Claim cWETH"]);
       const factory = activeFactoryConfig();
-      const data = encodeCall(SELECTORS.redeem, [
+      const payoutAsset = String(state.form.payoutAsset || "ETH").toUpperCase();
+      const selector = state.mode === "public" && payoutAsset === "WETH" ? SELECTORS.redeemToWeth : SELECTORS.redeem;
+      setTx([state.mode === "public" ? `Claim as ${payoutAsset === "WETH" ? "WETH" : "ETH"}` : "Claim cWETH"]);
+      const data = encodeCall(selector, [
         { type: "uint", value: BigInt(state.form.strike) },
         { type: "uint", value: BigInt(maturityTimestamp()) }
       ]);
       updateTx(0, { status: "submitted" });
       const hash = await sendTx(factory.factory, data, 0n);
+      await waitForTransactionReceipt(hash);
       updateTx(0, { status: "confirmed", hash });
       setToast("Claim submitted.");
       await refreshSelectedSeries();
+      await refreshPublicCollateralBalance(true);
     } catch (error) {
       markTxFailed(error.message);
     }
@@ -542,7 +613,7 @@ function createProtocolActions(ctx) {
   async function runSettleSeries() {
     if (!state.wallet.connected) return setToast("Connect wallet");
     if (isWrongNetwork()) return refreshWalletNetwork();
-    const validation = strikeValidation() || maturityValidation();
+    const validation = strikeValidation({ capToEthPrice: state.route !== "/settle" }) || maturityValidation();
     if (validation) return setToast(validation);
     if (!state.seriesRead.exists) return setToast("Series not found.");
     if (state.seriesRead.settled) return setToast("Series already settled.");
@@ -565,6 +636,7 @@ function createProtocolActions(ctx) {
       ]);
       updateTx(1, { status: "submitted" });
       const hash = await sendTx(adapter, data, 0n);
+      await waitForTransactionReceipt(hash);
       updateTx(1, { status: "confirmed", hash });
       setToast("Series settled.");
       await refreshSelectedSeries();
