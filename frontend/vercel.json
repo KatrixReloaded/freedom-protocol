@@ -1,0 +1,11 @@
+{
+  "redirects": [
+    { "source": "/", "destination": "/deposit", "permanent": false }
+  ],
+  "rewrites": [
+    { "source": "/deposit", "destination": "/index.html" },
+    { "source": "/trade", "destination": "/index.html" },
+    { "source": "/settle", "destination": "/index.html" },
+    { "source": "/shield", "destination": "/index.html" }
+  ]
+}
