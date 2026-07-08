@@ -1,10 +1,26 @@
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { loadConfig } from "../config/env.js";
 
 const { Pool } = pg;
+
+async function existingMigrationsDir(currentDir: string): Promise<string> {
+  const candidates = [
+    join(currentDir, "../../migrations"),
+    join(currentDir, "../../../migrations"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next runtime layout.
+    }
+  }
+  return candidates[0];
+}
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -17,7 +33,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
     `);
 
     const currentDir = dirname(fileURLToPath(import.meta.url));
-    const migrationsDir = join(currentDir, "../../migrations");
+    const migrationsDir = await existingMigrationsDir(currentDir);
     const files = (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort();
 
     for (const file of files) {
