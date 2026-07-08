@@ -8,9 +8,9 @@ Based on [Vitalik's ethresear.ch proposal](https://ethresear.ch/t/building-index
 
 ## Overview
 
-Freedom replaces collateralized debt positions (CDPs) with an options-based split-token mechanism. No liquidations, no real-time oracles, no debt.
+Freedom replaces collateralized debt positions (CDPs) with an options-based split-token mechanism. No liquidations, no continuous liquidation oracle loop, no debt.
 
-A user deposits ETH (or WETH) and mints two complementary tokens — **stableETH (P)** and **upETH (N)** — parameterized by a strike price S and maturity date M. These two tokens always sum back to the deposited collateral, regardless of price movements. There is no scenario where liabilities exceed assets — the system is solvent by construction, making liquidations impossible.
+A user deposits ETH (or WETH) and mints two complementary tokens — **stableETH (P)** and **upETH (N)** — parameterized by a strike price S and maturity timestamp M. These two tokens always sum back to the deposited collateral, regardless of price movements. There is no scenario where liabilities exceed assets — the system is solvent by construction, making liquidations impossible.
 
 The protocol operates in **two modes**:
 
@@ -82,6 +82,11 @@ The core mechanism is identical in both modes. The only difference is whether va
 - **S** — Strike price, chosen at mint time (same units as T), restricted on-chain to positive multiples of 50
 - **M** — Maturity timestamp, aligned to the current PoC slot size of 10 minutes
 
+At deposit/split time, factories also validate that the selected strike is not
+above 50% of the current Chainlink ETH/USD price. The frontend defaults to the
+nearest valid multiple of 50 at or below that bound, but the contract enforces
+the rule.
+
 Series identity is scoped by factory and keyed on-chain as:
 
 ```text
@@ -129,8 +134,8 @@ The public implementation supports native ETH (`collateralToken = address(0)`) o
 Public P and N tokens are **standard ERC-20s** built with OpenZeppelin. No FHE, no encrypted balances. They work on any EVM chain — Ethereum mainnet, Arbitrum, Base, Optimism, Polygon, etc.
 
 ```
-stableETH-1000-AUG26   <-- standard ERC-20
-upETH-1000-AUG26       <-- standard ERC-20
+stableETH-1000-1785542400   <-- standard ERC-20
+upETH-1000-1785542400       <-- standard ERC-20
 ```
 
 ### Trading
@@ -171,11 +176,11 @@ Native ETH → wrap to WETH → shield to cWETH (ERC-7984) → deposit into Free
 
 ### Token Standard
 
-Confidential P and N tokens are **ConfidentialERC20** tokens on Zama fhEVM. All balances are encrypted (`euint64`). Each (strike, maturity) pair deploys as its own ConfidentialERC20 contract.
+Confidential P and N tokens are **ConfidentialERC20** tokens on Zama fhEVM. All balances are encrypted (`euint64`). Each `(strikePrice, maturityTimestamp)` pair deploys as its own ConfidentialERC20 contract.
 
 ```
-stableETH-1000-AUG26   <-- ConfidentialERC20
-upETH-1000-AUG26       <-- ConfidentialERC20
+stableETH-1000-1785542400   <-- ConfidentialERC20
+upETH-1000-1785542400       <-- ConfidentialERC20
 ```
 
 ### Trading: Blind Matching Engine
@@ -214,25 +219,34 @@ Vitalik's proposal has an acknowledged weakness: users must periodically rebalan
 
 ---
 
-## Unshield Bridge: Confidential → Public
+## Shield Bridge: Public ↔ Confidential
 
-The unshield bridge is a one-way operation that converts confidential P or N tokens into their public equivalents. This enables confidential users to access DeFi composability when they choose to.
+`ShieldBridge` converts P or N option tokens between public and confidential form. Shielding lets public users move into confidential balances. Unshielding lets confidential users move back into public ERC-20 tokens for DeFi composability.
 
 ### Mechanism
+
+Shield:
+
+```
+Public P/N → Burn → Mint equivalent Confidential P/N
+```
+
+Unshield:
 
 ```
 Confidential P/N (fhEVM) → Burn → Mint equivalent Public P/N (target EVM)
 ```
 
-1. User calls `unshield()` on the confidential token contract
-2. The encrypted amount is decrypted (revealed)
-3. The confidential tokens are burned on fhEVM
-4. Equivalent public P/N tokens are minted on the target chain
-5. The amount is now plaintext — privacy for this position is forfeited
+1. User calls `shield(...)` to burn public P/N and mint confidential P/N. The amount is public because the source token is public.
+2. User calls `unshield(...)` to burn confidential P/N and create an unshield request.
+3. The bridge/keeper publicly decrypts the actual burned amount handle.
+4. `finalizeUnshield(...)` mints exactly that amount of public P/N.
+5. The unshielded amount is now plaintext — privacy for this position is forfeited.
 
 ### Properties
 
-- **One-way only:** You can unshield confidential → public, but not re-shield public → confidential. Once the amount is revealed, you cannot un-reveal it.
+- **Bidirectional bridge:** Public tokens can be shielded into confidential tokens, and confidential tokens can be unshielded into public tokens.
+- **Unshield reveals amount:** Once an amount is unshielded, that position size is public.
 - **Reveals the amount:** The unshielding operation necessarily exposes the position size. The user is making a deliberate choice to trade privacy for composability.
 - **Same series:** The public tokens have the same strike and maturity as the confidential ones. They are fungible with other public tokens of the same series.
 - **Cross-chain:** If public mode runs on a different chain than fhEVM, the bridge requires a cross-chain message (burn on fhEVM, mint on target chain). If both run on the same chain, it is a local burn-and-mint.
@@ -287,7 +301,7 @@ This is an acceptable tradeoff for eliminating centralized issuer risk. USDC giv
 
 ## Numerical Example: 5 ETH at $2000, Strike = $1000
 
-The user deposits 5 ETH (as WETH or cWETH) → mints **5 stableETH + 5 upETH** with S = $1000, M = 2 months out.
+The user deposits 5 ETH (as WETH or cWETH) → mints **5 stableETH + 5 upETH** with S = $1000 and a future 10-minute-aligned maturity timestamp.
 
 Strike selection: Vitalik recommends `S < current_price / 2`. At $2000, choosing S = $1000 means ETH must fall 50% before P starts losing USD value.
 
@@ -357,7 +371,7 @@ Same economic exposures as lending/borrowing, but:
 
 P holders should hold **deep in-the-money** positions (strike well below current price). Vitalik's recommendation:
 
-> If current price is X, hold P with S < X/2 and M 1-2 months out.
+> If current price is X, hold P with S < X/2 and a future maturity.
 > If price drops below S * 1.5, rotate into P with S' < new_price / 2.
 
 **Rotation** means:
@@ -399,9 +413,9 @@ This means the protocol can use **prediction-market-style oracles** which:
 - Are not vulnerable to flash loan attacks (no instant binding price)
 - Are already battle-tested in production
 
-This is categorically safer than real-time Chainlink-style oracles. The entire oracle security model is upgraded as a direct consequence of removing liquidations.
+This is categorically safer than liquidation systems that depend on continuously binding price updates. The current PoC uses Chainlink through an adapter at settlement time, but the protocol does not need real-time price updates to protect solvency.
 
-This applies to both public and confidential modes — neither requires a real-time oracle.
+This applies to both public and confidential modes — neither requires a real-time liquidation oracle.
 
 ---
 
@@ -409,26 +423,26 @@ This applies to both public and confidential modes — neither requires a real-t
 
 ### ERC-20s, not NFTs
 
-All stableETH/upETH tokens with the **same (strike, maturity)** are fungible. Users can sell partial positions.
+All stableETH/upETH tokens with the same `(strikePrice, maturityTimestamp)` are fungible. Users can sell partial positions.
 
-**Public mode:** Each (strike, maturity) pair deploys as a standard ERC-20 contract (OpenZeppelin).
-
-```
-stableETH-1000-AUG26   <-- standard ERC-20
-upETH-1000-AUG26       <-- standard ERC-20
-```
-
-**Confidential mode:** Each (strike, maturity) pair deploys as a ConfidentialERC20 contract (ERC-7984).
+**Public mode:** Each `(strikePrice, maturityTimestamp)` pair deploys as a standard ERC-20 contract (OpenZeppelin).
 
 ```
-stableETH-1000-AUG26   <-- ConfidentialERC20
-upETH-1000-AUG26       <-- ConfidentialERC20
+stableETH-1000-1785542400   <-- standard ERC-20
+upETH-1000-1785542400       <-- standard ERC-20
+```
+
+**Confidential mode:** Each `(strikePrice, maturityTimestamp)` pair deploys as a ConfidentialERC20 contract (ERC-7984).
+
+```
+stableETH-1000-1785542400   <-- ConfidentialERC20
+upETH-1000-1785542400       <-- ConfidentialERC20
 ```
 
 ### Fragmentation Mitigation
 
-- Standardized strikes at set intervals (e.g., round numbers, S < price/2)
-- Rolling maturities — monthly or bi-monthly only
+- Standardized strikes at set intervals (positive multiples of 50, with the UI defaulting near half the current ETH price)
+- PoC maturities use 10-minute-aligned timestamps for testability; a later production deployment can constrain the same `maturityTimestamp` field to monthly slots
 - Factory pattern deploys new pairs on demand (separate factories for public and confidential)
 
 ---
@@ -445,7 +459,7 @@ upETH-1000-AUG26       <-- ConfidentialERC20
 | stableETH minted amount | **Public** | Standard ERC-20 mint |
 | upETH minted amount | **Public** | Standard ERC-20 mint |
 | Strike price | **Public** | Defines the token series |
-| Maturity date | **Public** | Defines the token series |
+| Maturity timestamp | **Public** | Defines the token series |
 
 #### User Balances
 
@@ -559,7 +573,7 @@ Buyers bid "blind" — they don't know the seller's minimum. This works because:
 |    → burn both tokens → vault returns collateral  |
 |                                                   |
 |  settle(strikePrice, maturityTimestamp, oraclePrice) |
-|    → after maturity, set payout ratios             |
+|    → callable only by configured oracle adapter    |
 |                                                   |
 |  redeem(strikePrice, maturityTimestamp)            |
 |    → burn tokens, compute payout (plaintext math), |
@@ -609,7 +623,7 @@ Public mode does not need its own matching engine — P and N tokens trade on ex
 |    → burn both encrypted amounts → return cWETH   |
 |                                                   |
 |  settle(strikePrice, maturityTimestamp, oraclePrice) |
-|    → after maturity, set payout ratios             |
+|    → callable only by configured oracle adapter    |
 |                                                   |
 |  redeem(strikePrice, maturityTimestamp)            |
 |    → burn tokens, compute payout via FHE,          |
@@ -620,7 +634,8 @@ Public mode does not need its own matching engine — P and N tokens trade on ex
 |          ConfidentialMatchingEngine               |
 |                                                   |
 |  createListing(token, quoteToken,                 |
-|    strike, maturity, encAmount, encMinReceive,     |
+|    strikePrice, maturityTimestamp, encAmount,      |
+|    encMinReceive,                                  |
 |    amountProof, minProof)                          |
 |                                                   |
 |  fill(listingId, encPayment, encExpected,          |
@@ -643,17 +658,21 @@ Public mode does not need its own matching engine — P and N tokens trade on ex
 +--------------------------------------------------+
 ```
 
-### Unshield Bridge Contract
+### Shield Bridge Contract
 
 ```
 +--------------------------------------------------+
-|              UnshieldBridge                        |
+|                ShieldBridge                       |
 |                                                   |
-|  unshield(token, strike, maturity, encAmount)      |
-|    → decrypt amount (reveals position size)        |
-|    → burn ConfidentialERC20 on fhEVM              |
-|    → mint equivalent standard ERC-20 on target    |
-|    → one-way: confidential → public only          |
+|  shield(strikePrice, maturityTimestamp, side, amount) |
+|    → burn public ERC-20 option token              |
+|    → create confidential series if missing        |
+|    → mint equivalent ConfidentialERC20 option     |
+|                                                   |
+|  unshield(strikePrice, maturityTimestamp, side, amount) |
+|    → burn confidential option token               |
+|    → request public decryption of burned amount   |
+|    → finalizeUnshield mints public ERC-20 option  |
 +--------------------------------------------------+
 ```
 
@@ -678,14 +697,21 @@ Freedom only needs the oracle **at maturity** — not in real-time. This is a fu
 
 Because P + N = 1 unit of collateral by construction, there is no insolvency scenario that requires real-time intervention. The oracle's only job is to resolve the final price once, after which payouts are computed deterministically.
 
-Suitable oracle types:
+Current PoC oracle path:
+
+- `ChainlinkEthUsdOracleAdapter` reads ETH/USD from a configured Chainlink feed.
+- The adapter normalizes the feed answer to whole USD.
+- Anyone can call `settlePublic(...)` or `settleConfidential(...)` on the adapter after maturity.
+- The adapter calls the factory's gated `settle(strikePrice, maturityTimestamp, oraclePrice)`.
+
+Future oracle types:
 - **Prediction-market-style** (slow, dispute-based) — safest, aligns with Vitalik's thesis
 - **TWAP** at maturity — resistant to spot manipulation
-- **Chainlink with settlement delay** — pragmatic for v1
+- **Chainlink with settlement delay** — pragmatic near-term path
 
-**Public mode:** The oracle submits the price as plaintext. The contract computes payout rates in plaintext. Users call `redeem()` and receive the public collateral asset. Simple math.
+**Public mode:** The oracle adapter submits the price as plaintext. The contract computes payout rates in plaintext. Users call `redeem()` and receive the public collateral asset. Simple math.
 
-**Confidential mode:** The oracle submits the price as plaintext. The contract computes payout rates in plaintext (they are derivable from public strike + public oracle price anyway), then encrypts them for use in the per-user redemption computation which multiplies the rate by each user's encrypted balance.
+**Confidential mode:** The oracle adapter submits the price as plaintext. The contract computes payout rates in plaintext (they are derivable from public strike + public oracle price anyway), then encrypts them for use in the per-user redemption computation which multiplies the rate by each user's encrypted balance.
 
 ---
 
@@ -711,12 +737,12 @@ Suitable oracle types:
 
 1. **Rebalancing slippage** — If users lose >2%/year from rolling costs, the system is uncompetitive. Need "ultra narrow spreads for rolling" — potentially via gradual auctions (TWAP orders, batch auctions) rather than instant swaps. This is especially important in public mode where rebalancing is visible.
 2. **Public mode MEV mitigation** — Without encryption, rebalancing is visible. Batch auctions, TWAP orders, and intent-based execution can reduce MEV but not eliminate it. How much MEV leakage is acceptable before users should switch to confidential mode?
-3. **Unshield bridge design** — Cross-chain unshielding (fhEVM → Ethereum mainnet) requires a trusted bridge or message relay. What security model is acceptable? Within fhEVM, it is a simple burn-and-mint.
+3. **Shield bridge design** — Current PoC uses one configured `ShieldBridge` between the deployed public and confidential factories. Cross-chain shielding/unshielding would require a trusted bridge or message relay. What security model is acceptable?
 4. **Division precision** — `FHE.div` on encrypted integers with SCALE=1e6 (confidential mode). Rounding dust is ~1 unit (0.000001). Needs testing.
 5. **Gas costs** — FHE operations are heavier than plaintext (confidential mode). Public mode has standard EVM gas costs. Settlement is infrequent (maturity only), but confidential matching engine operations happen per trade. Coprocessor offloads heavy FHE.
 6. **Multi-collateral** — Public mode supports native ETH or one ERC-20 collateral per factory deployment. Confidential mode uses cWETH-style encrypted collateral with its separate confidential factory/vault path.
 7. **Perpetual variant** — Commenters on Vitalik's post proposed perpetual versions with continuous minting/burning and dynamic saturation mechanics instead of fixed expiry. Worth exploring as v2.
-8. **Oracle design** — Current contracts gate `settle()` to an immutable oracle address. Production still needs a robust oracle process, ideally dispute-based or TWAP-backed.
+8. **Oracle design** — Current contracts gate factory `settle()` to an immutable oracle adapter address. The PoC adapter uses Chainlink ETH/USD; production may still need a dispute-based or TWAP-backed process.
 9. **P token adoption** — For P to replace USDC, it needs deep liquidity on major DEXs and acceptance as collateral on lending protocols. Bootstrapping this liquidity is a cold-start problem.
 10. **Regulatory classification** — P is not a stablecoin in the traditional sense (no issuer, no reserves, no peg mechanism). How regulators classify it affects adoption.
 

@@ -17,6 +17,15 @@ seriesId(uint256 strikePrice, uint64 maturityTimestamp) returns (bytes32)
 
 Frontend preset should choose the next future 10-minute boundary.
 
+## Strike Validation
+
+- `strikePrice > 0`
+- `strikePrice % 50 == 0`
+- deposit/split entrypoints validate `strikePrice <= 50%` of the current
+  Chainlink ETH/USD price read by the factory's configured `ethUsdFeed`
+- frontend should default to the largest multiple of 50 less than or equal to
+  50% of current ETH price, but the factory enforces the limit on-chain
+
 ## Public Factory
 
 ```solidity

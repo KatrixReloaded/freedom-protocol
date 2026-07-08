@@ -5,7 +5,7 @@ Implemented the focused bridge/custom-error changes.
 
   What changed:
 
-  - UnshieldBridge.unshield(...) no longer requires the public series to exist.
+  - ShieldBridge.unshield(...) no longer requires the public series to exist.
   - finalizeUnshield(...) now creates the missing public series clone using the confidential token’s maturityTimestamp, then calls
     bridgeMint.
 
@@ -22,7 +22,7 @@ Implemented shielding in the renamed bridge.
 
   Changes made:
 
-  - Renamed UnshieldBridge contract/file to ShieldBridge.
+  - Renamed the earlier UnshieldBridge contract/file to ShieldBridge.
   - Added shield(strikePrice, maturityTimestamp, isStable, amount):
       - burns the public option token from the user
       - creates the confidential series if missing

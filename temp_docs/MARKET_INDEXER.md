@@ -76,8 +76,9 @@ strikePrice
 maturityTimestamp
 ```
 
-Do not key only by strike/maturity. ETH, WETH, and cWETH factories may all have
-the same strike/maturity series.
+Do not key only by strike/maturity. WETH and cWETH factories may both have the
+same strike/maturity series. Native ETH deposits into the public path are still
+indexed as WETH collateral when the factory wraps ETH internally.
 
 ## Data Sources
 
@@ -87,6 +88,10 @@ Factories:
 - `Split`
 - `Settled`
 - `Redeemed`
+
+Public `Split.amount` and `Merge.amount` are raw 6-decimal option-token units.
+Public `Redeemed.claim` is raw 18-decimal collateral base units for the emitted
+payout asset. Do not add these fields together without unit-aware conversion.
 
 Public market/order contracts, if present:
 
@@ -122,7 +127,7 @@ id text primary key -- chainId:factoryAddress
 chain_id bigint not null
 address text not null
 mode text not null -- public | confidential
-collateral_symbol text not null -- ETH | WETH | cWETH
+collateral_symbol text not null -- WETH | cWETH
 collateral_address text
 created_at timestamptz not null
 ```
@@ -276,7 +281,7 @@ The watcher needs static deployment config:
         {
           "address": "0x...",
           "mode": "public",
-          "collateralSymbol": "ETH"
+          "collateralSymbol": "WETH"
         }
       ],
       "matchingEngines": [

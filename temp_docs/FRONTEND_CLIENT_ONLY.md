@@ -41,6 +41,7 @@ Validation:
 
 ```text
 strike must be a positive multiple of 50
+strike must be less than or equal to 50% of current ETH price
 ```
 
 Default:
@@ -58,8 +59,13 @@ export function defaultStrike(currentEthPrice: number): number {
   return Math.floor((currentEthPrice * 0.5) / STRIKE_TICK) * STRIKE_TICK;
 }
 
-export function isValidStrike(strike: number): boolean {
-  return Number.isInteger(strike) && strike > 0 && strike % STRIKE_TICK === 0;
+export function isValidStrike(strike: number, currentEthPrice: number): boolean {
+  return (
+    Number.isInteger(strike)
+    && strike > 0
+    && strike % STRIKE_TICK === 0
+    && strike <= currentEthPrice * 0.5
+  );
 }
 ```
 
@@ -78,8 +84,8 @@ Strike is above current ETH price. P is already in drift zone.
 Higher strike gives less downside buffer.
 ```
 
-Do not force recommended strikes. Let users choose farther strikes based on how
-much stability they want.
+Do not hide valid lower strikes. Let users choose any strike within the
+contract-accepted range so they can pick a larger stability buffer when wanted.
 
 ### Maturity
 
@@ -147,9 +153,9 @@ Do not rely only on `eth_getCode(predictedAddress)` as the existence check.
 
 ## Deposit Page
 
-### Public ETH
+### Public ETH Payment
 
-If selected collateral is native ETH and the series does not exist:
+If selected payment asset is native ETH and the series does not exist:
 
 ```text
 createSeriesAndSplit(strike, maturityTimestamp, amount)
@@ -166,7 +172,7 @@ split(strike, maturityTimestamp, amount, { value: amount })
 Depending on final contract design, the frontend may use `createSeriesAndSplit`
 for both cases if the function is idempotent.
 
-### Public WETH/ERC20
+### Public WETH/ERC20 Payment
 
 From zero allowance:
 
@@ -181,6 +187,16 @@ createSeriesAndSplit
 ```
 
 Do not assume WETH supports permit.
+
+Public ETH/WETH deposits send or approve the 18-decimal collateral raw amount,
+but the expected P/N amount is derived from the contract unit model:
+
+```text
+optionAmount = collateralRaw / 1e12
+```
+
+Reject public deposits below `0.000001` ETH/WETH and values not divisible by
+`0.000001` ETH/WETH.
 
 ### Confidential cWETH
 
@@ -326,7 +342,8 @@ Public claim flow:
 4. If matured and unsettled, read adapter.latestEthUsdPrice().
 5. Wallet submits adapter.settlePublic(factory, strike, maturityTimestamp).
 6. After settlement, estimate claim.
-7. Wallet submits redeem(strike, maturityTimestamp).
+7. Wallet submits redeem(strike, maturityTimestamp) for ETH payout, or
+   redeemToWeth(strike, maturityTimestamp) for WETH payout.
 ```
 
 Confidential claim flow:
@@ -372,8 +389,9 @@ watcher:
       "factories": [
         {
           "mode": "public",
-          "collateral": "ETH",
-          "address": "0x..."
+          "collateral": "WETH",
+          "address": "0x...",
+          "paymentAssets": ["ETH", "WETH"]
         }
       ]
     }
@@ -389,19 +407,23 @@ core actions.
 Supported env/runtime config keys:
 
 ```text
+FREEDOM_SEPOLIA_PUBLIC_FACTORY=0xfCEdAb313542d11cd859fd586218C38d7669F6a5
+# Backward-compatible aliases, if present:
 FREEDOM_SEPOLIA_PUBLIC_ETH_FACTORY=
 FREEDOM_SEPOLIA_PUBLIC_WETH_FACTORY=
 FREEDOM_SEPOLIA_WETH_TOKEN=0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14
 
-FREEDOM_SEPOLIA_CONFIDENTIAL_FACTORY=
+FREEDOM_SEPOLIA_CONFIDENTIAL_FACTORY=0x1774cAc50c97aFbed216E3CF372DC5F612ba3D49
+FREEDOM_SEPOLIA_CONFIDENTIAL_MATCHING_ENGINE=0xc951997fCb8F64ae27dad74f27295A8b3001d433
+FREEDOM_SEPOLIA_SERIES_POOL_IMPLEMENTATION=0x5E525Be04B3B4A2471514B13202Efe98a702D4b0
 FREEDOM_SEPOLIA_CWETH_TOKEN=0x46208622DA27d91db4f0393733C8BA082ed83158
 FREEDOM_SEPOLIA_CWETH_AUTH_MODE=operator # allowance | operator | none
 FREEDOM_SEPOLIA_CWETH_OPERATOR_UNTIL=      # optional unix timestamp
 
 FREEDOM_ANVIL_SHIELD_BRIDGE=
-FREEDOM_SEPOLIA_SHIELD_BRIDGE=
+FREEDOM_SEPOLIA_SHIELD_BRIDGE=0x9d5372311820Ea27Ec9f607878282CD22D05fe3F
 FREEDOM_ANVIL_ORACLE_ADAPTER=
-FREEDOM_SEPOLIA_ORACLE_ADAPTER=
+FREEDOM_SEPOLIA_ORACLE_ADAPTER=0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e
 FREEDOM_MARKET_API_URL=
 
 FREEDOM_ZAMA_GATEWAY_CHAIN_ID=10901
@@ -415,8 +437,9 @@ the time of writing.
 Sepolia token defaults:
 
 ```text
-Public WETH defaults to WETH9 at 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14.
-WETH acquisition uses WETH9.deposit() payable; it is not a faucet mint.
+Public reserves use WETH9 at 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14.
+WETH acquisition uses WETH9.deposit() payable; it is optional for users who
+choose WETH payment. ETH payment does not require pre-wrapping.
 
 Confidential cWETH defaults to Zama Sepolia cWETHMock at
 0x46208622DA27d91db4f0393733C8BA082ed83158 from:
@@ -430,7 +453,7 @@ frontend mint helper.
 ShieldBridge:
 
 ```text
-ShieldBridge replaces UnshieldBridge.
+The current bridge contract is `ShieldBridge`.
 Use shield(strikePrice, maturityTimestamp, isStable, amount) for public -> confidential.
 Use unshield(strikePrice, maturityTimestamp, isStable, amount) for confidential -> public requests.
 The backend keeper may public-decrypt the burned amount handle and call
@@ -534,7 +557,8 @@ Keep the frontend aligned with `FRONTEND.md`:
 
 ## Success Criteria
 
-- User can choose any strike that is a multiple of 50.
+- User can choose any strike that is a multiple of 50 and does not exceed 50%
+  of current ETH price.
 - Default strike is derived from current ETH price at 50% rounded down to the
   nearest 50.
 - User can choose 10-minute PoC maturity slots.
