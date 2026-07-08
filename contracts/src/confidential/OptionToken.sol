@@ -42,6 +42,14 @@ contract OptionToken is ConfidentialERC20Base, OptionTokenBase {
         FHE.allow(burnAmount, msg.sender);
     }
 
+    /// @notice Burn the full stored encrypted balance for `from`.
+    /// @dev The token contract owns ACL access to its stored balance handle, so authorized callers
+    ///      do not need to pass a user balance handle across the contract boundary.
+    function burnBalance(address from) external onlyAuthorized returns (euint64 burnAmount) {
+        burnAmount = _burn(from, _balances[from]);
+        FHE.allow(burnAmount, msg.sender);
+    }
+
     /// @notice Pull encrypted tokens from `from` into the caller (factory or pool).
     function pullFrom(address from, euint64 amount) external onlyAuthorized {
         _transferEncrypted(from, msg.sender, amount);

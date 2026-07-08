@@ -70,6 +70,7 @@ contract ShieldBridge {
     error ShieldBridge__RequestNotFound();
     error ShieldBridge__AlreadyFinalized();
     error ShieldBridge__BurnExceedsRequest();
+    error ShieldBridge__InvalidBridgeAmount();
 
     constructor(address confFactory_, address pubFactory_) {
         FHE.setCoprocessor(ZamaConfig.getEthereumCoprocessorConfig());
@@ -96,6 +97,7 @@ contract ShieldBridge {
         external
         returns (uint256 requestId)
     {
+        if (amount == ProtocolConstants.ZERO_UINT256) revert ShieldBridge__InvalidBridgeAmount();
         if (amount > type(uint64).max) revert ShieldBridge__AmountTooLarge();
         // forge-lint: disable-next-line(unsafe-typecast)
         uint64 requestedAmount = uint64(amount);
@@ -132,6 +134,7 @@ contract ShieldBridge {
 
         uint64 actualBurned = abi.decode(abiEncodedCleartexts, (uint64));
         if (actualBurned > request.requestedAmount) revert ShieldBridge__BurnExceedsRequest();
+        _validateBridgeAmount(actualBurned);
         request.finalized = true;
 
         _ensurePublicSeries(request.strikePrice, request.maturityTimestamp);
@@ -145,9 +148,10 @@ contract ShieldBridge {
         );
     }
 
-    /// @notice Burns public option tokens and mints the same amount as confidential option tokens.
+    /// @notice Burns public option tokens and mints the notional-equivalent confidential option amount.
     /// @dev The amount is public because the source token is a public ERC-20.
     function shield(uint256 strikePrice, uint64 maturityTimestamp, bool isStable, uint256 amount) external {
+        _validateBridgeAmount(amount);
         if (amount > type(uint64).max) revert ShieldBridge__AmountTooLarge();
 
         PublicOptionToken pubToken = _publicToken(strikePrice, maturityTimestamp, isStable);
@@ -224,5 +228,9 @@ contract ShieldBridge {
         if (confStable == ProtocolConstants.ZERO_ADDRESS && confUp == ProtocolConstants.ZERO_ADDRESS) {
             confidentialFactory.createSeries(strikePrice, maturityTimestamp);
         }
+    }
+
+    function _validateBridgeAmount(uint256 amount) internal pure {
+        if (amount == ProtocolConstants.ZERO_UINT256) revert ShieldBridge__InvalidBridgeAmount();
     }
 }

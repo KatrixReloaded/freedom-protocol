@@ -10,22 +10,22 @@ import {ProtocolConstants} from "../src/libraries/ProtocolConstants.sol";
 
 contract DeployConfidential is Script {
     address internal constant SEPOLIA_ETH_USD_FEED = 0x694AA1769357215DE4FAC081bf1f309aDC325306;
+    uint256 internal constant DEFAULT_MAX_STALENESS = 5 minutes;
 
     function run()
         external
         returns (OptionFactory factory, SeriesPool poolImplementation, ConfidentialMatchingEngine matchingEngine)
     {
-        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        address broadcaster = _startBroadcast();
         address cWETH = vm.envAddress("CWETH");
         address ethUsdFeed = vm.envOr("ETH_USD_FEED", SEPOLIA_ETH_USD_FEED);
-        uint256 maxStaleness = vm.envUint("MAX_STALENESS");
+        uint256 maxStaleness = vm.envOr("MAX_STALENESS", DEFAULT_MAX_STALENESS);
         address oracle = vm.envOr("ORACLE", ProtocolConstants.ZERO_ADDRESS);
         address oracleAdapter = oracle;
         bool oracleAdapterDeployedByScript;
 
-        vm.startBroadcast(deployerKey);
         if (oracle == ProtocolConstants.ZERO_ADDRESS) {
-            address owner = vm.envOr("ORACLE_OWNER", vm.addr(deployerKey));
+            address owner = vm.envOr("ORACLE_OWNER", broadcaster);
             ChainlinkEthUsdOracleAdapter adapter = new ChainlinkEthUsdOracleAdapter(ethUsdFeed, maxStaleness, owner);
             oracle = address(adapter);
             oracleAdapter = address(adapter);
@@ -51,5 +51,16 @@ contract DeployConfidential is Script {
         json = vm.serializeAddress(object, "seriesPoolImplementation", address(poolImplementation));
         json = vm.serializeAddress(object, "matchingEngine", address(matchingEngine));
         vm.writeJson(json, string.concat("deployments/", vm.toString(block.chainid), "-confidential.json"));
+    }
+
+    function _startBroadcast() internal returns (address broadcaster) {
+        if (vm.envExists("PRIVATE_KEY")) {
+            uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+            broadcaster = vm.addr(deployerKey);
+            vm.startBroadcast(deployerKey);
+        } else {
+            broadcaster = msg.sender;
+            vm.startBroadcast();
+        }
     }
 }

@@ -77,6 +77,25 @@ contract ConfidentialProtocolTest is Test {
         vm.stopPrank();
     }
 
+    function _settle(OptionFactory factory, uint256 oraclePrice) internal {
+        vm.warp(maturityTimestamp + 1);
+        vm.prank(oracle);
+        factory.settle(strike, maturityTimestamp, oraclePrice);
+    }
+
+    function _deployFactoryWithSeriesAndBridge()
+        internal
+        returns (MockConfidentialToken cWETH, OptionFactory factory, OptionToken stable, OptionToken up, address bridge)
+    {
+        cWETH = new MockConfidentialToken("Confidential WETH", "cWETH");
+        factory = new OptionFactory(address(cWETH), oracle, address(feed), 1 days);
+        bridge = address(0xBEEF);
+        factory.setBridge(bridge);
+        (address stableAddr, address upAddr) = factory.createSeries(strike, maturityTimestamp);
+        stable = OptionToken(stableAddr);
+        up = OptionToken(upAddr);
+    }
+
     function testConfidentialSplitMergeSettleRedeemPairInvariant() public {
         (MockConfidentialToken cWETH, OptionFactory factory, OptionToken stable, OptionToken up) =
             _deployFactoryWithSeries();
@@ -93,9 +112,7 @@ contract ConfidentialProtocolTest is Test {
         assertEq(_plain(up.balanceOf(seller)), 600_000);
         assertEq(cWETH.plainBalanceOf(seller), 400_000);
 
-        vm.warp(maturityTimestamp + 1);
-        vm.prank(oracle);
-        factory.settle(strike, maturityTimestamp, 4_000);
+        _settle(factory, 4_000);
 
         OptionFactory.Series memory s = factory.getSeries(strike, maturityTimestamp);
         assertTrue(s.settled);
@@ -108,6 +125,69 @@ contract ConfidentialProtocolTest is Test {
         assertEq(_plain(stable.balanceOf(seller)), 0);
         assertEq(_plain(up.balanceOf(seller)), 0);
         assertEq(cWETH.plainBalanceOf(seller), 1_000_000);
+    }
+
+    function testConfidentialRedeemBurnsTokenSideBalancesWithoutFactoryBalanceAcl() public {
+        (MockConfidentialToken cWETH, OptionFactory factory, OptionToken stable, OptionToken up) =
+            _deployFactoryWithSeries();
+        _split(cWETH, factory, 1_000_000);
+        _settle(factory, 4_000);
+
+        vm.prank(seller);
+        factory.redeem(strike, maturityTimestamp);
+
+        assertEq(_plain(stable.balanceOf(seller)), 0);
+        assertEq(_plain(up.balanceOf(seller)), 0);
+        assertEq(_plain(stable.totalSupply()), 0);
+        assertEq(_plain(up.totalSupply()), 0);
+        assertEq(cWETH.plainBalanceOf(seller), 1_000_000);
+    }
+
+    function testConfidentialRedeemHandlesZeroBalances() public {
+        (MockConfidentialToken cWETH, OptionFactory factory, OptionToken stable, OptionToken up) =
+            _deployFactoryWithSeries();
+        _settle(factory, 4_000);
+
+        vm.prank(seller);
+        factory.redeem(strike, maturityTimestamp);
+
+        assertEq(_plain(stable.balanceOf(seller)), 0);
+        assertEq(_plain(up.balanceOf(seller)), 0);
+        assertEq(cWETH.plainBalanceOf(seller), 0);
+    }
+
+    function testConfidentialRedeemComputesPayoutFromStableBurnedBalance() public {
+        (MockConfidentialToken cWETH, OptionFactory factory, OptionToken stable, OptionToken up, address bridge) =
+            _deployFactoryWithSeriesAndBridge();
+        _split(cWETH, factory, 1_000_000);
+
+        vm.prank(bridge);
+        up.burnBalance(seller);
+        _settle(factory, 4_000);
+
+        vm.prank(seller);
+        factory.redeem(strike, maturityTimestamp);
+
+        assertEq(_plain(stable.balanceOf(seller)), 0);
+        assertEq(_plain(up.balanceOf(seller)), 0);
+        assertEq(cWETH.plainBalanceOf(seller), 500_000);
+    }
+
+    function testConfidentialRedeemComputesPayoutFromUpBurnedBalance() public {
+        (MockConfidentialToken cWETH, OptionFactory factory, OptionToken stable, OptionToken up, address bridge) =
+            _deployFactoryWithSeriesAndBridge();
+        _split(cWETH, factory, 1_000_000);
+
+        vm.prank(bridge);
+        stable.burnBalance(seller);
+        _settle(factory, 4_000);
+
+        vm.prank(seller);
+        factory.redeem(strike, maturityTimestamp);
+
+        assertEq(_plain(stable.balanceOf(seller)), 0);
+        assertEq(_plain(up.balanceOf(seller)), 0);
+        assertEq(cWETH.plainBalanceOf(seller), 500_000);
     }
 
     function testSettleIsOracleOnly() public {

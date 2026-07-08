@@ -12,6 +12,8 @@ contract PublicFlashLoanTest is Test {
     address oracle = address(0xA11CE);
     address user = address(0xB0B);
     uint256 strike = 2_000;
+    uint256 constant TEN_COLLATERAL = 0.00001 ether;
+    uint256 constant FIVE_COLLATERAL = 0.000005 ether;
     uint64 maturityTimestamp;
     MockEthUsdAggregator feed;
 
@@ -26,34 +28,33 @@ contract PublicFlashLoanTest is Test {
         PublicOptionFactory factory = new PublicOptionFactory(address(0), oracle, address(feed), 1 days);
         factory.createSeries(strike, maturityTimestamp);
         vm.prank(user);
-        factory.split{value: 1_000_000}(strike, maturityTimestamp, 1_000_000);
+        factory.split{value: TEN_COLLATERAL}(strike, maturityTimestamp, TEN_COLLATERAL);
 
         RepayingFlashBorrower borrower = new RepayingFlashBorrower();
-        vm.deal(address(borrower), 10_000);
-        uint256 fee = factory.vault().flashFee(address(0), 500_000);
+        vm.deal(address(borrower), 0.01 ether);
+        uint256 fee = factory.vault().flashFee(address(0), FIVE_COLLATERAL);
 
-        assertEq(factory.vault().maxFlashLoan(address(0)), 1_000_000);
-        assertEq(fee, 250);
-        assertTrue(factory.vault().flashLoan(borrower, address(0), 500_000, ""));
-        assertEq(address(factory.vault()).balance, 1_000_000 + fee);
+        assertEq(factory.vault().maxFlashLoan(address(0)), TEN_COLLATERAL);
+        assertTrue(factory.vault().flashLoan(borrower, address(0), FIVE_COLLATERAL, ""));
+        assertEq(address(factory.vault()).balance, TEN_COLLATERAL + fee);
     }
 
     function testErc20FlashLoanTransfersAndPullsRepayment() public {
-        MockERC20 weth = new MockERC20("Wrapped Ether", "WETH", 6);
+        MockERC20 weth = new MockERC20("Wrapped Ether", "WETH", 18);
         PublicOptionFactory factory = new PublicOptionFactory(address(weth), oracle, address(feed), 1 days);
         factory.createSeries(strike, maturityTimestamp);
-        weth.mint(user, 1_000_000);
+        weth.mint(user, TEN_COLLATERAL);
         vm.startPrank(user);
-        weth.approve(address(factory.vault()), 1_000_000);
-        factory.split(strike, maturityTimestamp, 1_000_000);
+        weth.approve(address(factory.vault()), TEN_COLLATERAL);
+        factory.split(strike, maturityTimestamp, TEN_COLLATERAL);
         vm.stopPrank();
 
         RepayingFlashBorrower borrower = new RepayingFlashBorrower();
-        weth.mint(address(borrower), 10_000);
-        uint256 fee = factory.vault().flashFee(address(weth), 500_000);
+        weth.mint(address(borrower), 0.01 ether);
+        uint256 fee = factory.vault().flashFee(address(weth), FIVE_COLLATERAL);
 
-        assertTrue(factory.vault().flashLoan(borrower, address(weth), 500_000, ""));
-        assertEq(weth.balanceOf(address(factory.vault())), 1_000_000 + fee);
+        assertTrue(factory.vault().flashLoan(borrower, address(weth), FIVE_COLLATERAL, ""));
+        assertEq(weth.balanceOf(address(factory.vault())), TEN_COLLATERAL + fee);
     }
 
     function testBadCallbackReverts() public {
@@ -71,13 +72,13 @@ contract PublicFlashLoanTest is Test {
         PublicOptionFactory factory = new PublicOptionFactory(address(0), oracle, address(feed), 1 days);
         factory.createSeries(strike, maturityTimestamp);
         vm.prank(user);
-        factory.split{value: 1_000_000}(strike, maturityTimestamp, 1_000_000);
+        factory.split{value: TEN_COLLATERAL}(strike, maturityTimestamp, TEN_COLLATERAL);
 
         MutatingFlashBorrower borrower = new MutatingFlashBorrower();
         borrower.configure(factory, strike, maturityTimestamp);
-        vm.deal(address(borrower), 10_000);
+        vm.deal(address(borrower), 0.01 ether);
 
-        assertTrue(factory.vault().flashLoan(borrower, address(0), 500_000, ""));
-        assertEq(factory.reserves(factory.seriesId(strike, maturityTimestamp)), 1_000_000);
+        assertTrue(factory.vault().flashLoan(borrower, address(0), FIVE_COLLATERAL, ""));
+        assertEq(factory.reserves(factory.seriesId(strike, maturityTimestamp)), TEN_COLLATERAL);
     }
 }

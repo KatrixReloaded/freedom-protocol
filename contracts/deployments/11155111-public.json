@@ -1,0 +1,15 @@
+{
+  "bridge": "0xea54b756D2586394029A2f4fBFAe024766E8aaf7",
+  "chainId": 11155111,
+  "collateralToken": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+  "depositPriceMaxStaleness": 3600,
+  "ethUsdFeed": "0x694AA1769357215DE4FAC081bf1f309aDC325306",
+  "factory": "0x1c98aF677B9680c6A94dF4687bF454648A32e5e2",
+  "oracle": "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+  "oracleAdapter": "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+  "oracleAdapterDeployedByScript": false,
+  "stableTokenImplementation": "0x66c91bD2Bf5fb71b8E44918e711E6409De6711A0",
+  "upTokenImplementation": "0x3b543F3368f5a95089B7b92CF8aa1c778a9ED875",
+  "vault": "0x21081de4e1385beb01583575096938B5cE5D6c2E",
+  "weth": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"
+}

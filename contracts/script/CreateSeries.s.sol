@@ -10,12 +10,11 @@ interface ISeriesCreator {
 
 contract CreateSeries is Script {
     function run() external returns (address stable, address up) {
-        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address factory = vm.envAddress("FACTORY");
         uint256 strike = vm.envUint("STRIKE");
         uint64 maturityTimestamp = uint64(vm.envUint("MATURITY_TIMESTAMP"));
 
-        vm.startBroadcast(deployerKey);
+        _startBroadcast();
         (stable, up) = ISeriesCreator(factory).createSeries(strike, maturityTimestamp);
         vm.stopBroadcast();
 
@@ -61,5 +60,13 @@ contract CreateSeries is Script {
             vm.toString(up),
             '"}'
         );
+    }
+
+    function _startBroadcast() internal {
+        if (vm.envExists("PRIVATE_KEY")) {
+            vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        } else {
+            vm.startBroadcast();
+        }
     }
 }

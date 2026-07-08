@@ -1,0 +1,7 @@
+{
+  "adapter": "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+  "chainId": 11155111,
+  "ethUsdFeed": "0x694AA1769357215DE4FAC081bf1f309aDC325306",
+  "maxStaleness": 3600,
+  "owner": "0xc71a9057fA590213C530caaaFA78230C8A20ece4"
+}

@@ -23,7 +23,8 @@ interface IConfidentialQuoteToken {
     function transferFrom(address from, address to, externalEuint64 encAmt, bytes calldata proof)
         external
         returns (bool);
-    function transfer(address to, euint64 amount) external returns (bool);
+    function confidentialTransferFrom(address from, address to, euint64 amount) external returns (euint64);
+    function confidentialTransfer(address to, euint64 amount) external returns (euint64);
     function balanceOf(address account) external view returns (euint64);
 }
 
@@ -81,6 +82,7 @@ contract ConfidentialMatchingEngine {
         euint64 minPay = FHE.fromExternal(encMinReceive, minProof);
 
         // Pull seller's tokens into escrow
+        FHE.allow(amount, address(token));
         token.pullFrom(msg.sender, amount);
 
         listingId = nextListingId++;
@@ -129,8 +131,9 @@ contract ConfidentialMatchingEngine {
         euint64 payment = FHE.fromExternal(encPayment, paymentProof);
         euint64 expected = FHE.fromExternal(encExpected, expectedProof);
 
-        // Escrow buyer's payment
-        l.quoteToken.transferFrom(msg.sender, address(this), encPayment, paymentProof);
+        // Escrow buyer's payment using the internal handle already decoded by this engine.
+        FHE.allow(payment, address(l.quoteToken));
+        l.quoteToken.confidentialTransferFrom(msg.sender, address(this), payment);
 
         // ── FHE match verification ─────────────────────────────────────────
         ebool c1 = FHE.ge(payment, l.minReceive); // buyer pays enough
@@ -161,12 +164,14 @@ contract ConfidentialMatchingEngine {
         l.token.authorizedTransfer(address(this), l.seller, tokenBack);
 
         // Quote → seller
+        FHE.allow(quoteOut, address(l.quoteToken));
         FHE.allow(quoteOut, l.seller);
-        l.quoteToken.transfer(l.seller, quoteOut);
+        l.quoteToken.confidentialTransfer(l.seller, quoteOut);
 
         // Quote refund → buyer
+        FHE.allow(quoteBack, address(l.quoteToken));
         FHE.allow(quoteBack, msg.sender);
-        l.quoteToken.transfer(msg.sender, quoteBack);
+        l.quoteToken.confidentialTransfer(msg.sender, quoteBack);
 
         // Deactivate listing (fully consumed or failed — amounts handle it)
         l.active = false;

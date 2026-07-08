@@ -1,0 +1,21 @@
+{
+  "bridge": "0xea54b756D2586394029A2f4fBFAe024766E8aaf7",
+  "cWETH": "0x46208622DA27d91db4f0393733C8BA082ed83158",
+  "chainId": 11155111,
+  "confidentialFactory": "0xb1EB5165Bc03847C8789f9b06f121a5Da3ec387c",
+  "confidentialStableTokenImplementation": "0xa7cF340f3EaD07722C1e098b94Bc74627e43963D",
+  "confidentialUpTokenImplementation": "0x6D842DD600FeE0bDfd9f494dE5f7A287A5e2D088",
+  "confidentialVault": "0xD79EF8eb1F7879fD1C962823CD6af711C23b0F50",
+  "depositPriceMaxStaleness": 3600,
+  "ethUsdFeed": "0x694AA1769357215DE4FAC081bf1f309aDC325306",
+  "matchingEngine": "0x4Ac50Eb419cE50dCa6940fF90bFa7DA42fA30Ca9",
+  "oracle": "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+  "oracleAdapter": "0xA5405757cF0Ae0a116de2e5298c4A2Da3ab2CC7e",
+  "oracleAdapterDeployedByScript": false,
+  "publicFactory": "0x1c98aF677B9680c6A94dF4687bF454648A32e5e2",
+  "publicStableTokenImplementation": "0x66c91bD2Bf5fb71b8E44918e711E6409De6711A0",
+  "publicUpTokenImplementation": "0x3b543F3368f5a95089B7b92CF8aa1c778a9ED875",
+  "publicVault": "0x21081de4e1385beb01583575096938B5cE5D6c2E",
+  "seriesPoolImplementation": "0x977ea8728b6f05A0f63313970A192160fb41dFC6",
+  "weth": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"
+}

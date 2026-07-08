@@ -24,7 +24,8 @@ interface IConfidentialQuoteToken {
     function transferFrom(address from, address to, externalEuint64 encAmt, bytes calldata proof)
         external
         returns (bool);
-    function transfer(address to, euint64 amount) external returns (bool);
+    function confidentialTransferFrom(address from, address to, euint64 amount) external returns (euint64);
+    function confidentialTransfer(address to, euint64 amount) external returns (euint64);
 }
 
 contract SeriesPool {
@@ -137,8 +138,9 @@ contract SeriesPool {
         euint64 payment = FHE.fromExternal(encPayment, paymentProof);
         euint64 expected = FHE.fromExternal(encExpected, expectedProof);
 
-        // Escrow buyer's payment
-        quoteToken.transferFrom(msg.sender, address(this), encPayment, paymentProof);
+        // Escrow buyer's payment using the internal handle already decoded by this pool.
+        FHE.allow(payment, address(quoteToken));
+        quoteToken.confidentialTransferFrom(msg.sender, address(this), payment);
 
         // Compute minimum required payment: expected * minPricePerToken / SCALE
         euint64 encRequired = FHE.div(FHE.mul(expected, FHE.asEuint64(minPricePerToken)), SCALE);
@@ -166,8 +168,9 @@ contract SeriesPool {
         optionToken.authorizedTransfer(address(this), msg.sender, filled);
 
         // Refund excess quote to buyer
+        FHE.allow(refund, address(quoteToken));
         FHE.allow(refund, msg.sender);
-        quoteToken.transfer(msg.sender, refund);
+        quoteToken.confidentialTransfer(msg.sender, refund);
 
         // Distribute earned quote to sellers in FIFO order
         _distributeToSellers(filled, kept);
@@ -199,8 +202,9 @@ contract SeriesPool {
         optionToken.authorizedTransfer(address(this), msg.sender, remainingTokens);
 
         // Return accumulated quote to seller
+        FHE.allow(earnedQuote, address(quoteToken));
         FHE.allow(earnedQuote, msg.sender);
-        quoteToken.transfer(msg.sender, earnedQuote);
+        quoteToken.confidentialTransfer(msg.sender, earnedQuote);
 
         emit Withdrawn(msg.sender);
     }

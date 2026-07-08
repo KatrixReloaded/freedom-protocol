@@ -74,7 +74,7 @@ contract ShieldBridgeTest is Test {
         return _deployEnv(splitAmount, false);
     }
 
-    function _deployPublicSeriesOnly(uint256 splitAmount) internal returns (Env memory env) {
+    function _deployPublicSeriesOnly(uint256 optionAmount) internal returns (Env memory env) {
         env.cWETH = new MockConfidentialToken("Confidential WETH", "cWETH");
         env.confFactory = new OptionFactory(address(env.cWETH), oracle, address(feed), 1 days);
         env.pubFactory = new PublicOptionFactory(address(0), oracle, address(feed), 1 days);
@@ -86,8 +86,9 @@ contract ShieldBridgeTest is Test {
         env.bridge.authorizeSeries(strike, maturityTimestamp);
         env.pubStable = PublicOptionToken(pubStableAddr);
 
+        uint256 collateralAmount = optionAmount * env.pubFactory.COLLATERAL_TO_OPTION_SCALE();
         vm.prank(user);
-        env.pubFactory.split{value: splitAmount}(strike, maturityTimestamp, splitAmount);
+        env.pubFactory.split{value: collateralAmount}(strike, maturityTimestamp, collateralAmount);
     }
 
     function _deployEnv(uint64 splitAmount, bool createPublicSeries) internal returns (Env memory env) {
@@ -204,7 +205,7 @@ contract ShieldBridgeTest is Test {
     }
 
     function testShieldCreatesMissingConfidentialSeriesAndMints() public {
-        Env memory env = _deployPublicSeriesOnly(500_000);
+        Env memory env = _deployPublicSeriesOnly(1_000_000);
         assertFalse(env.confFactory.seriesExists(strike, maturityTimestamp));
 
         vm.prank(user);
@@ -214,7 +215,7 @@ contract ShieldBridgeTest is Test {
         OptionToken confStable = OptionToken(confStableAddr);
         assertTrue(env.confFactory.seriesExists(strike, maturityTimestamp));
         assertEq(confStable.maturityTimestamp(), maturityTimestamp);
-        assertEq(env.pubStable.balanceOf(user), 300_000);
+        assertEq(env.pubStable.balanceOf(user), 800_000);
         assertEq(_plain(confStable.balanceOf(user)), 200_000);
         assertEq(_plain(confStable.totalSupply()), 200_000);
     }

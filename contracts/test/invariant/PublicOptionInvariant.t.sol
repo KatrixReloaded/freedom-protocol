@@ -11,7 +11,7 @@ contract PublicOptionInvariantTest is Test {
     function testPairRedeemsToOneCollateralAcrossPrices(uint256 rawPrice) public {
         uint256 strike = 2_000;
         uint64 maturityTimestamp = uint64(((block.timestamp / 10 minutes) + 1) * 10 minutes);
-        uint256 amount = 1_000_000;
+        uint256 amount = 0.00001 ether;
         uint256 oraclePrice = bound(rawPrice, 0, 10_000);
 
         MockEthUsdAggregator feed = new MockEthUsdAggregator(8);

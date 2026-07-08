@@ -6,14 +6,14 @@ import {ChainlinkEthUsdOracleAdapter} from "../src/oracle/ChainlinkEthUsdOracleA
 
 contract DeployOracleAdapter is Script {
     address internal constant SEPOLIA_ETH_USD_FEED = 0x694AA1769357215DE4FAC081bf1f309aDC325306;
+    uint256 internal constant DEFAULT_MAX_STALENESS = 5 minutes;
 
     function run() external returns (ChainlinkEthUsdOracleAdapter adapter) {
-        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        address broadcaster = _startBroadcast();
         address ethUsdFeed = vm.envOr("ETH_USD_FEED", SEPOLIA_ETH_USD_FEED);
-        uint256 maxStaleness = vm.envUint("MAX_STALENESS");
-        address owner = vm.envOr("ORACLE_OWNER", vm.addr(deployerKey));
+        uint256 maxStaleness = vm.envOr("MAX_STALENESS", DEFAULT_MAX_STALENESS);
+        address owner = vm.envOr("ORACLE_OWNER", broadcaster);
 
-        vm.startBroadcast(deployerKey);
         adapter = new ChainlinkEthUsdOracleAdapter(ethUsdFeed, maxStaleness, owner);
         vm.stopBroadcast();
 
@@ -24,5 +24,16 @@ contract DeployOracleAdapter is Script {
         json = vm.serializeUint(object, "maxStaleness", maxStaleness);
         json = vm.serializeAddress(object, "owner", owner);
         vm.writeJson(json, string.concat("deployments/", vm.toString(block.chainid), "-oracle-adapter.json"));
+    }
+
+    function _startBroadcast() internal returns (address broadcaster) {
+        if (vm.envExists("PRIVATE_KEY")) {
+            uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+            broadcaster = vm.addr(deployerKey);
+            vm.startBroadcast(deployerKey);
+        } else {
+            broadcaster = msg.sender;
+            vm.startBroadcast();
+        }
     }
 }

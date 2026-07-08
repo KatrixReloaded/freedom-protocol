@@ -9,13 +9,18 @@ interface IERC20Like {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
 }
 
+interface IWETH is IERC20Like {
+    function deposit() external payable;
+    function withdraw(uint256 amount) external;
+}
+
 interface IERC3156FlashBorrowerLike {
     function onFlashLoan(address initiator, address token, uint256 amount, uint256 fee, bytes calldata data)
         external
         returns (bytes32);
 }
 
-/// @notice Central ETH/ERC-20 custody for all public option series created by one factory.
+/// @notice Central ETH/WETH custody for all public option series created by one factory.
 /// @dev During flash loans, reserve-changing operations are locked so borrowed vault
 ///      funds cannot be recycled into option minting or withdrawals before repayment.
 contract CentralCollateralVault {
@@ -33,7 +38,7 @@ contract CentralCollateralVault {
     bool public flashLoanActive;
 
     event ReserveDeposited(bytes32 indexed seriesId, address indexed from, uint256 amount);
-    event ReserveWithdrawn(bytes32 indexed seriesId, address indexed to, uint256 amount);
+    event ReserveWithdrawn(bytes32 indexed seriesId, address indexed to, uint256 amount, address indexed payoutAsset);
     event FlashLoan(address indexed receiver, address indexed initiator, uint256 amount, uint256 fee);
 
     error CentralCollateralVault__NotFactory();
@@ -59,9 +64,7 @@ contract CentralCollateralVault {
         isNativeCollateral = collateralToken_ == ProtocolConstants.ZERO_ADDRESS;
     }
 
-    receive() external payable {
-        if (!isNativeCollateral) revert CentralCollateralVault__UnsupportedToken();
-    }
+    fallback() external payable {}
 
     function depositReserve(bytes32 seriesId, address from, uint256 amount)
         external
@@ -69,10 +72,13 @@ contract CentralCollateralVault {
         onlyFactory
         notDuringFlashLoan
     {
-        if (isNativeCollateral) {
+        if (msg.value != ProtocolConstants.ZERO_UINT256) {
             if (msg.value != amount) revert CentralCollateralVault__TokenTransferFailed();
+            if (!isNativeCollateral) {
+                IWETH(collateralToken).deposit{value: amount}();
+            }
         } else {
-            if (msg.value != ProtocolConstants.ZERO_UINT256) revert CentralCollateralVault__UnsupportedToken();
+            if (isNativeCollateral) revert CentralCollateralVault__TokenTransferFailed();
             if (!IERC20Like(collateralToken).transferFrom(from, address(this), amount)) {
                 revert CentralCollateralVault__TokenTransferFailed();
             }
@@ -83,17 +89,40 @@ contract CentralCollateralVault {
     }
 
     function withdrawReserve(bytes32 seriesId, address to, uint256 amount) external onlyFactory notDuringFlashLoan {
+        _withdrawReserve(seriesId, to, amount, false);
+    }
+
+    function repayFlashLoan() external payable {
+        if (!isNativeCollateral || !flashLoanActive) revert CentralCollateralVault__UnsupportedToken();
+    }
+
+    function withdrawReserveAsCollateralToken(bytes32 seriesId, address to, uint256 amount)
+        external
+        onlyFactory
+        notDuringFlashLoan
+    {
+        if (isNativeCollateral) revert CentralCollateralVault__UnsupportedToken();
+        _withdrawReserve(seriesId, to, amount, true);
+    }
+
+    function _withdrawReserve(bytes32 seriesId, address to, uint256 amount, bool asCollateralToken) internal {
         reserves[seriesId] -= amount;
         totalReserves -= amount;
-        if (isNativeCollateral) {
-            (bool ok,) = payable(to).call{value: amount}("");
-            if (!ok) revert CentralCollateralVault__TokenTransferFailed();
-        } else {
+        address payoutAsset;
+        if (asCollateralToken) {
             if (!IERC20Like(collateralToken).transfer(to, amount)) {
                 revert CentralCollateralVault__TokenTransferFailed();
             }
+            payoutAsset = collateralToken;
+        } else {
+            payoutAsset = ProtocolConstants.ZERO_ADDRESS;
+            if (!isNativeCollateral) {
+                IWETH(collateralToken).withdraw(amount);
+            }
+            (bool ok,) = payable(to).call{value: amount}("");
+            if (!ok) revert CentralCollateralVault__TokenTransferFailed();
         }
-        emit ReserveWithdrawn(seriesId, to, amount);
+        emit ReserveWithdrawn(seriesId, to, amount, payoutAsset);
     }
 
     function maxFlashLoan(address token) external view returns (uint256) {

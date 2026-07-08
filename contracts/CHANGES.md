@@ -1,5 +1,11 @@
 # Freedom Protocol — Contract Architecture Changes
 
+> Historical document. This file describes an earlier public-mode and
+> `UnshieldBridge` implementation plan. The current PoC ABI uses
+> `maturityTimestamp`, `ShieldBridge`, and the Chainlink settlement adapter.
+> Treat `temp_docs/POC_10_MINUTE_ABI_HANDOFF.md` and the contracts in
+> `contracts/src/` as the current source of truth.
+
 Implementation spec for adding public mode and the unshield bridge on top of the existing confidential contracts.
 
 Read the existing contracts in `src/` before starting. This document describes all changes relative to that current state.

@@ -9,6 +9,10 @@ import {ProtocolConstants} from "../libraries/ProtocolConstants.sol";
 import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
 
 contract PublicOptionFactory is OptionFactoryBase {
+    // One raw public option unit represents 1e12 wei, matching 6-decimal ETH/WETH display units.
+    uint256 public constant COLLATERAL_TO_OPTION_SCALE = 1e12;
+    uint256 public constant MIN_PUBLIC_COLLATERAL_AMOUNT = 0.000001 ether;
+
     struct Series {
         PublicOptionToken stableToken;
         PublicOptionToken upToken;
@@ -41,10 +45,13 @@ contract PublicOptionFactory is OptionFactoryBase {
         address stableToken,
         address upToken
     );
+    /// @dev amount is 6-decimal option-token units. Vault reserves remain 18-decimal collateral base units.
     event Split(address indexed user, bytes32 indexed seriesId, uint256 amount);
-    event Merge(address indexed user, bytes32 indexed seriesId, uint256 amount);
+    /// @dev amount is 6-decimal option-token units. payoutAsset identifies native ETH or the collateral token.
+    event Merge(address indexed user, bytes32 indexed seriesId, uint256 amount, address indexed payoutAsset);
     event Settled(bytes32 indexed seriesId, uint256 oraclePrice, uint256 stablePayout, uint256 upPayout);
-    event Redeemed(address indexed user, bytes32 indexed seriesId, uint256 claim);
+    /// @dev claim is 18-decimal collateral base units paid as payoutAsset.
+    event Redeemed(address indexed user, bytes32 indexed seriesId, uint256 claim, address indexed payoutAsset);
     event BridgeMinted(address indexed user, bytes32 indexed seriesId, bool indexed isStable, uint256 amount);
 
     error PublicOptionFactory__SeriesExists();
@@ -57,6 +64,7 @@ contract PublicOptionFactory is OptionFactoryBase {
     error PublicOptionFactory__Reentrancy();
     error PublicOptionFactory__AlreadySet();
     error PublicOptionFactory__NotBridge();
+    error PublicOptionFactory__InvalidCollateralAmount();
 
     constructor(address collateralToken_, address oracle_, address ethUsdFeed_, uint256 depositPriceMaxStaleness_) {
         if (oracle_ == ProtocolConstants.ZERO_ADDRESS) revert PublicOptionFactory__InvalidOracle();
@@ -82,7 +90,7 @@ contract PublicOptionFactory is OptionFactoryBase {
         return _createSeries(strikePrice, maturityTimestamp, id);
     }
 
-    function createSeriesAndSplit(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount)
+    function createSeriesAndSplit(uint256 strikePrice, uint64 maturityTimestamp, uint256 collateralAmount)
         external
         payable
         nonReentrant
@@ -97,7 +105,7 @@ contract PublicOptionFactory is OptionFactoryBase {
             upToken = address(s.upToken);
         }
         _validateDepositStrike(strikePrice, ethUsdFeed, depositPriceMaxStaleness);
-        _split(id, series[id], amount);
+        _split(id, series[id], collateralAmount);
     }
 
     function _createSeries(uint256 strikePrice, uint64 maturityTimestamp, bytes32 id)
@@ -177,33 +185,51 @@ contract PublicOptionFactory is OptionFactoryBase {
         emit SeriesCreated(id, strikePrice, maturityTimestamp, stable, up);
     }
 
-    function split(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount) external payable nonReentrant {
+    function split(uint256 strikePrice, uint64 maturityTimestamp, uint256 collateralAmount)
+        external
+        payable
+        nonReentrant
+    {
         bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
         if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
         _validateDepositStrike(strikePrice, ethUsdFeed, depositPriceMaxStaleness);
-        _split(id, s, amount);
+        _split(id, s, collateralAmount);
     }
 
-    function _split(bytes32 id, Series storage s, uint256 amount) internal {
+    function _split(bytes32 id, Series storage s, uint256 collateralAmount) internal {
         if (s.settled) revert PublicOptionFactory__AlreadySettled();
 
-        vault.depositReserve{value: msg.value}(id, msg.sender, amount);
-        s.stableToken.mint(msg.sender, amount);
-        s.upToken.mint(msg.sender, amount);
-        emit Split(msg.sender, id, amount);
+        uint256 optionAmount = _toOptionAmount(collateralAmount);
+        vault.depositReserve{value: msg.value}(id, msg.sender, collateralAmount);
+        s.stableToken.mint(msg.sender, optionAmount);
+        s.upToken.mint(msg.sender, optionAmount);
+        emit Split(msg.sender, id, optionAmount);
     }
 
     function merge(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount) external nonReentrant {
+        _merge(strikePrice, maturityTimestamp, amount, false);
+    }
+
+    function mergeToEth(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount) external nonReentrant {
+        _merge(strikePrice, maturityTimestamp, amount, false);
+    }
+
+    function mergeToWeth(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount) external nonReentrant {
+        _merge(strikePrice, maturityTimestamp, amount, true);
+    }
+
+    function _merge(uint256 strikePrice, uint64 maturityTimestamp, uint256 amount, bool asWeth) internal {
         bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
         if (!s.exists) revert PublicOptionFactory__SeriesNotFound();
         if (s.settled) revert PublicOptionFactory__AlreadySettled();
 
+        uint256 collateralAmount = _toCollateralAmount(amount);
         s.stableToken.burn(msg.sender, amount);
         s.upToken.burn(msg.sender, amount);
-        vault.withdrawReserve(id, msg.sender, amount);
-        emit Merge(msg.sender, id, amount);
+        _withdrawReserve(id, msg.sender, collateralAmount, asWeth);
+        emit Merge(msg.sender, id, amount, _payoutAsset(asWeth));
     }
 
     function settle(uint256 strikePrice, uint64 maturityTimestamp, uint256 oraclePrice) external {
@@ -222,6 +248,18 @@ contract PublicOptionFactory is OptionFactoryBase {
     }
 
     function redeem(uint256 strikePrice, uint64 maturityTimestamp) external nonReentrant {
+        _redeem(strikePrice, maturityTimestamp, false);
+    }
+
+    function redeemToEth(uint256 strikePrice, uint64 maturityTimestamp) external nonReentrant {
+        _redeem(strikePrice, maturityTimestamp, false);
+    }
+
+    function redeemToWeth(uint256 strikePrice, uint64 maturityTimestamp) external nonReentrant {
+        _redeem(strikePrice, maturityTimestamp, true);
+    }
+
+    function _redeem(uint256 strikePrice, uint64 maturityTimestamp, bool asWeth) internal {
         bytes32 id = seriesId(strikePrice, maturityTimestamp);
         Series storage s = series[id];
         if (!s.settled) revert PublicOptionFactory__NotSettled();
@@ -232,9 +270,36 @@ contract PublicOptionFactory is OptionFactoryBase {
         s.stableToken.burn(msg.sender, stableBal);
         s.upToken.burn(msg.sender, upBal);
 
-        uint256 claim = (stableBal * s.stablePayout + upBal * s.upPayout) / SCALE;
-        vault.withdrawReserve(id, msg.sender, claim);
-        emit Redeemed(msg.sender, id, claim);
+        uint256 claimOptionUnits = (stableBal * s.stablePayout + upBal * s.upPayout) / SCALE;
+        uint256 claimCollateralAmount = _toCollateralAmount(claimOptionUnits);
+        _withdrawReserve(id, msg.sender, claimCollateralAmount, asWeth);
+        emit Redeemed(msg.sender, id, claimCollateralAmount, _payoutAsset(asWeth));
+    }
+
+    function _toOptionAmount(uint256 collateralAmount) internal pure returns (uint256) {
+        if (
+            collateralAmount < MIN_PUBLIC_COLLATERAL_AMOUNT
+                || collateralAmount % MIN_PUBLIC_COLLATERAL_AMOUNT != ProtocolConstants.ZERO_UINT256
+        ) {
+            revert PublicOptionFactory__InvalidCollateralAmount();
+        }
+        return collateralAmount / COLLATERAL_TO_OPTION_SCALE;
+    }
+
+    function _toCollateralAmount(uint256 optionAmount) internal pure returns (uint256) {
+        return optionAmount * COLLATERAL_TO_OPTION_SCALE;
+    }
+
+    function _withdrawReserve(bytes32 id, address to, uint256 amount, bool asWeth) internal {
+        if (asWeth) {
+            vault.withdrawReserveAsCollateralToken(id, to, amount);
+        } else {
+            vault.withdrawReserve(id, to, amount);
+        }
+    }
+
+    function _payoutAsset(bool asWeth) internal view returns (address) {
+        return asWeth ? collateralToken : ProtocolConstants.ZERO_ADDRESS;
     }
 
     // ── Bridge support ─────────────────────────────────────────────────────

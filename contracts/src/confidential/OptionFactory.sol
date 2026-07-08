@@ -359,13 +359,10 @@ contract OptionFactory is OptionFactoryBase {
         Series storage s = series[id];
         if (!s.settled) revert OptionFactory__NotSettled();
 
-        // Read user's encrypted balances
-        euint64 stableBal = s.stableToken.balanceOf(msg.sender);
-        euint64 upBal = s.upToken.balanceOf(msg.sender);
-
-        // Burn the tokens
-        s.stableToken.burn(msg.sender, stableBal);
-        s.upToken.burn(msg.sender, upBal);
+        // Burn each full token-side balance inside the token contract. The balance handles are
+        // ACL-allowed to the token contracts, not to this factory.
+        euint64 stableBal = s.stableToken.burnBalance(msg.sender);
+        euint64 upBal = s.upToken.burnBalance(msg.sender);
 
         // Compute encrypted payout:
         // stableClaim = stableBal * stablePayout / SCALE
