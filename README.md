@@ -9,7 +9,7 @@ Together, `1 P + 1 N` always represents the deposited collateral. There is no bo
 
 ## Short Description
 
-Freedom is a dual-mode options protocol that turns ETH collateral into stableETH and upETH positions. Public mode creates normal ERC-20 P/N tokens for transparent DeFi use, while confidential mode uses Zama fhEVM so balances, listing sizes, and trade terms stay encrypted during private market making.
+Freedom is a liquidation-free options protocol that turns ETH collateral into stableETH and upETH positions without debt, margin calls, or liquidation penalties. Public mode creates normal ERC-20 P/N tokens for transparent DeFi use, while confidential mode uses Zama fhEVM so balances, listing sizes, and trade terms stay encrypted during private market making.
 
 ## Live Demo
 
