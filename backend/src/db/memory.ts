@@ -14,6 +14,8 @@ import type {
   BridgeRequestRow,
   BridgeRequestStatus,
   ChainStatusRow,
+  CleanupOptions,
+  CleanupResult,
   EventGroup,
   ListingFilters,
   ListingRow,
@@ -69,9 +71,12 @@ export class MemoryRepository implements Repository {
   private series = new Map<string, SeriesRow>();
   private listings = new Map<string, ListingRow>();
   private bridgeRequests = new Map<string, BridgeRequestRow>();
+  private seriesUpdatedAt = new Map<string, number>();
+  private listingUpdatedAt = new Map<string, number>();
+  private bridgeRequestUpdatedAt = new Map<string, number>();
   private activity = new Map<string, PublicPositionActivityRow>();
   private cursors = new Map<string, bigint>();
-  private logs = new Set<string>();
+  private logs = new Map<string, { chainId: number; blockNumber: bigint }>();
 
   private enrichListing(row: ListingRow): ListingRow {
     const series =
@@ -148,10 +153,10 @@ export class MemoryRepository implements Repository {
     }
   }
 
-  async recordLogOnce(source: SourceRef): Promise<boolean> {
+  async recordLogOnce(source: SourceRef, _eventName?: string): Promise<boolean> {
     const key = sourceKey(source);
     if (this.logs.has(key)) return false;
-    this.logs.add(key);
+    this.logs.set(key, { chainId: source.chainId, blockNumber: source.blockNumber });
     return true;
   }
 
@@ -181,6 +186,7 @@ export class MemoryRepository implements Repository {
       settledTx: existing?.settledTx ?? null,
       settledLogIndex: existing?.settledLogIndex ?? null,
     });
+    this.seriesUpdatedAt.set(id, Date.now());
   }
 
   async upsertSeriesSettled(input: SeriesSettledInput): Promise<void> {
@@ -197,6 +203,7 @@ export class MemoryRepository implements Repository {
       settledTx: input.transactionHash.toLowerCase() as Hex,
       settledLogIndex: input.logIndex,
     });
+    this.seriesUpdatedAt.set(id, Date.now());
   }
 
   async applyPublicPositionDelta(input: PublicPositionDeltaInput): Promise<void> {
@@ -262,6 +269,7 @@ export class MemoryRepository implements Repository {
       settledBlock: existing?.settledBlock ?? null,
       settledTx: existing?.settledTx ?? null,
     });
+    this.listingUpdatedAt.set(id, Date.now());
   }
 
   async markListingFilled(input: ListingFillInput): Promise<void> {
@@ -277,6 +285,7 @@ export class MemoryRepository implements Repository {
       filledTx: input.transactionHash.toLowerCase() as Hex,
       filledLogIndex: input.logIndex,
     });
+    this.listingUpdatedAt.set(id, Date.now());
   }
 
   async markListingCancelled(input: ListingCancelInput): Promise<void> {
@@ -290,6 +299,7 @@ export class MemoryRepository implements Repository {
       cancelledTx: input.transactionHash.toLowerCase() as Hex,
       cancelledLogIndex: input.logIndex,
     });
+    this.listingUpdatedAt.set(id, Date.now());
   }
 
   async upsertUnshieldRequested(input: UnshieldRequestedInput): Promise<void> {
@@ -317,6 +327,7 @@ export class MemoryRepository implements Repository {
       finalizeTxHash: existing?.finalizeTxHash ?? null,
       error: null,
     });
+    this.bridgeRequestUpdatedAt.set(id, Date.now());
   }
 
   async markUnshieldFinalized(input: UnshieldFinalizedInput): Promise<void> {
@@ -332,6 +343,7 @@ export class MemoryRepository implements Repository {
       finalizeLogIndex: input.logIndex,
       error: null,
     });
+    this.bridgeRequestUpdatedAt.set(id, Date.now());
   }
 
   async updateBridgeRequestStatus(input: BridgeRequestStatusInput): Promise<void> {
@@ -343,6 +355,71 @@ export class MemoryRepository implements Repository {
       finalizeTxHash: input.finalizeTxHash ? (input.finalizeTxHash.toLowerCase() as Hex) : row.finalizeTxHash,
       error: input.error ?? null,
     });
+    this.bridgeRequestUpdatedAt.set(input.id, Date.now());
+  }
+
+  async cleanupAncientData(options: CleanupOptions): Promise<CleanupResult> {
+    const cutoffMs = (options.now ?? new Date()).getTime() - options.retentionDays * 24 * 60 * 60 * 1000;
+    const result: CleanupResult = {
+      bridgeRequestsDeleted: 0,
+      marketListingsDeleted: 0,
+      seriesDeleted: 0,
+      indexedLogsDeleted: 0,
+    };
+
+    for (const [id, row] of [...this.bridgeRequests.entries()]) {
+      const updatedAt = this.bridgeRequestUpdatedAt.get(id) ?? 0;
+      if ((row.status === "finalized" || row.status === "failed") && updatedAt < cutoffMs) {
+        this.bridgeRequests.delete(id);
+        this.bridgeRequestUpdatedAt.delete(id);
+        result.bridgeRequestsDeleted++;
+      }
+    }
+
+    for (const [id, row] of [...this.listings.entries()]) {
+      const updatedAt = this.listingUpdatedAt.get(id) ?? 0;
+      if (!row.active && (row.filledBlock !== null || row.cancelledBlock !== null) && updatedAt < cutoffMs) {
+        this.listings.delete(id);
+        this.listingUpdatedAt.delete(id);
+        result.marketListingsDeleted++;
+      }
+    }
+
+    const activeListings = [...this.listings.values()].filter((row) => row.active);
+    for (const [id, row] of [...this.series.entries()]) {
+      const updatedAt = this.seriesUpdatedAt.get(id) ?? 0;
+      const hasActiveListing = activeListings.some(
+        (listing) =>
+          listing.chainId === row.chainId &&
+          ((listing.factoryAddress !== null &&
+            listing.factoryAddress === row.factoryAddress &&
+            listing.seriesId === row.seriesId) ||
+            listing.token === row.stableToken ||
+            listing.token === row.upToken),
+      );
+      if (row.settled && updatedAt < cutoffMs && !hasActiveListing) {
+        this.series.delete(id);
+        this.seriesUpdatedAt.delete(id);
+        result.seriesDeleted++;
+      }
+    }
+
+    const cutoffs = new Map<number, bigint>();
+    for (const chain of this.chains.values()) {
+      if (chain.lastSeenBlock === null) continue;
+      const head = BigInt(chain.lastSeenBlock);
+      if (head <= options.indexedLogRetentionBlocks) continue;
+      cutoffs.set(chain.chainId, head - options.indexedLogRetentionBlocks);
+    }
+    for (const [key, log] of [...this.logs.entries()]) {
+      const cutoff = cutoffs.get(log.chainId);
+      if (cutoff !== undefined && log.blockNumber < cutoff) {
+        this.logs.delete(key);
+        result.indexedLogsDeleted++;
+      }
+    }
+
+    return result;
   }
 
   async getCursor(chainId: number, contractAddress: Address, eventGroup: EventGroup): Promise<bigint | null> {

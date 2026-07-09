@@ -58,6 +58,18 @@ function bigintFrom(value: unknown, fallback: bigint): bigint {
   return BigInt(String(value));
 }
 
+function numberFrom(value: unknown, fallback: number): number {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function booleanFrom(value: unknown, fallback: boolean): boolean {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === "true" || value === true) return true;
+  if (value === "false" || value === false) return false;
+  return fallback;
+}
+
 function parseChains(json: string | undefined): ChainConfig[] {
   if (!json) {
     return [
@@ -162,15 +174,23 @@ function parseChains(json: string | undefined): ChainConfig[] {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const rewindBlocks = bigintFrom(env.INDEXER_REWIND_BLOCKS, 64n);
+  const minIndexedLogRetentionBlocks = rewindBlocks + 500n;
+  const indexedLogRetentionBlocks = bigintFrom(env.INDEXED_LOG_RETENTION_BLOCKS, 1_000n);
   return {
     port: Number(env.PORT ?? 4010),
     host: env.HOST ?? "127.0.0.1",
     databaseUrl: env.DATABASE_URL ?? "postgres://postgres@127.0.0.1:5432/freedom_market_indexer",
     pollIntervalMs: Number(env.INDEXER_POLL_INTERVAL_MS ?? 12_000),
-    rewindBlocks: bigintFrom(env.INDEXER_REWIND_BLOCKS, 64n),
+    rewindBlocks,
     maxBlockRange: bigintFrom(env.INDEXER_MAX_BLOCK_RANGE, 2_000n),
     keeperPollIntervalMs: Number(env.KEEPER_POLL_INTERVAL_MS ?? 15_000),
     settlementKeeperPollIntervalMs: Number(env.SETTLEMENT_KEEPER_POLL_INTERVAL_MS ?? 60_000),
+    cleanupEnabled: booleanFrom(env.CLEANUP_ENABLED, false),
+    cleanupRetentionDays: Math.max(1, Math.floor(numberFrom(env.CLEANUP_RETENTION_DAYS, 14))),
+    cleanupPollIntervalMs: Math.max(60_000, Math.floor(numberFrom(env.CLEANUP_POLL_INTERVAL_MS, 3_600_000))),
+    indexedLogRetentionBlocks:
+      indexedLogRetentionBlocks < minIndexedLogRetentionBlocks ? minIndexedLogRetentionBlocks : indexedLogRetentionBlocks,
     chains: parseChains(env.CHAINS_JSON),
   };
 }

@@ -30,6 +30,21 @@ function testAddress(value: number): Address {
 }
 
 describe("routes", () => {
+  it("serves health without touching configured RPC endpoints", async () => {
+    const repo = new MemoryRepository();
+    await repo.initializeConfig(testConfig);
+    const app = createServer(
+      { ...testConfig, chains: [{ ...testConfig.chains[0], rpcUrl: "http://127.0.0.1:1" }] },
+      repo,
+    );
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({ ok: true, service: "freedom-market-indexer" });
+
+    await app.close();
+  });
+
   it("serves series, listings, user listings, and public position activity", async () => {
     const repo = new MemoryRepository();
     await repo.initializeConfig(testConfig);

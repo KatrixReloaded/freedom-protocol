@@ -72,6 +72,10 @@ export interface AppConfig {
   maxBlockRange: bigint;
   keeperPollIntervalMs: number;
   settlementKeeperPollIntervalMs: number;
+  cleanupEnabled: boolean;
+  cleanupRetentionDays: number;
+  cleanupPollIntervalMs: number;
+  indexedLogRetentionBlocks: bigint;
   chains: ChainConfig[];
 }
 
@@ -219,4 +223,17 @@ export interface BridgeRequestFilters {
   bridge?: Address;
   user?: Address;
   status?: BridgeRequestStatus;
+}
+
+export interface CleanupOptions {
+  retentionDays: number;
+  indexedLogRetentionBlocks: bigint;
+  now?: Date;
+}
+
+export interface CleanupResult {
+  bridgeRequestsDeleted: number;
+  marketListingsDeleted: number;
+  seriesDeleted: number;
+  indexedLogsDeleted: number;
 }

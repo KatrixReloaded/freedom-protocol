@@ -38,12 +38,21 @@ Copy `.env.example` and set:
 - `SETTLEMENT_KEEPER_POLL_INTERVAL_MS`
 - `INDEXER_REWIND_BLOCKS`
 - `INDEXER_MAX_BLOCK_RANGE`
+- `CLEANUP_ENABLED`
+- `CLEANUP_RETENTION_DAYS`
+- `CLEANUP_POLL_INTERVAL_MS`
+- `INDEXED_LOG_RETENTION_BLOCKS`
 - `CHAINS_JSON`
 
 `CHAINS_JSON` contains local Anvil/Sepolia chain entries, RPC URLs,
 confirmation depths, factory addresses, matching-engine addresses, bridge
 addresses, optional contract start blocks, keeper settings, FHE public decrypt
 settings, and optional cWETH/collateral addresses.
+
+Cleanup is disabled by default. Set `CLEANUP_ENABLED=true` to run a startup and
+periodic retention pass for ancient finalized/closed data while preserving
+active listings, non-finalized bridge requests, unsettled series, config tables,
+and indexer cursors.
 
 Settlement chain fields:
 

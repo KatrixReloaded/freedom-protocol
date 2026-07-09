@@ -15,6 +15,10 @@ function sepoliaConfig(): AppConfig {
     settlementKeeperPollIntervalMs: 10_000,
     rewindBlocks: 5n,
     maxBlockRange: 1_000n,
+    cleanupEnabled: false,
+    cleanupRetentionDays: 14,
+    cleanupPollIntervalMs: 3_600_000,
+    indexedLogRetentionBlocks: 1_000n,
     chains: [
       {
         chainId: 11155111,

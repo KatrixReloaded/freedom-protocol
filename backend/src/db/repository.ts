@@ -2,6 +2,8 @@ import type { Address, Hex } from "viem";
 import type {
   AppConfig,
   BridgeConfig,
+  CleanupOptions,
+  CleanupResult,
   BridgeRequestFilters,
   BridgeRequestRow,
   BridgeRequestStatus,
@@ -99,6 +101,7 @@ export interface Repository {
   close(): Promise<void>;
   migrate?(): Promise<void>;
   initializeConfig(config: AppConfig): Promise<void>;
+  cleanupAncientData(options: CleanupOptions): Promise<CleanupResult>;
   recordLogOnce(source: SourceRef, eventName: string): Promise<boolean>;
   upsertSeriesCreated(input: SeriesCreatedInput): Promise<void>;
   upsertSeriesSettled(input: SeriesSettledInput): Promise<void>;

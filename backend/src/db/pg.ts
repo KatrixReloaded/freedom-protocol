@@ -10,7 +10,7 @@ import {
   positionActivityPrimaryKey,
   seriesPrimaryKey,
 } from "../keys.js";
-import type { AppConfig, BridgeRequestFilters, BridgeRequestRow, BridgeRequestStatus, ChainStatusRow, EventGroup, ListingFilters, ListingRow, MarketMode, PublicPositionActivityRow, SeriesFilters, SeriesRow, SourceRef } from "../types.js";
+import type { AppConfig, BridgeRequestFilters, BridgeRequestRow, BridgeRequestStatus, ChainStatusRow, CleanupOptions, CleanupResult, EventGroup, ListingFilters, ListingRow, MarketMode, PublicPositionActivityRow, SeriesFilters, SeriesRow, SourceRef } from "../types.js";
 import type {
   BridgeRequestStatusInput,
   KeeperBridgeRequest,
@@ -30,6 +30,10 @@ const { Pool } = pg;
 
 function bigintText(value: bigint): string {
   return value.toString();
+}
+
+function deletedCount(result: pg.QueryResult): number {
+  return result.rowCount ?? 0;
 }
 
 function rowToChain(row: Record<string, unknown>): ChainStatusRow {
@@ -793,6 +797,68 @@ export class PgRepository implements Repository {
       }
     }
     return rows;
+  }
+
+  async cleanupAncientData(options: CleanupOptions): Promise<CleanupResult> {
+    const cutoff = new Date((options.now ?? new Date()).getTime() - options.retentionDays * 24 * 60 * 60 * 1000);
+
+    const bridgeRequests = await this.pool.query(
+      `delete from bridge_requests
+       where status in ('finalized', 'failed')
+         and updated_at < $1`,
+      [cutoff],
+    );
+
+    const marketListings = await this.pool.query(
+      `delete from market_listings
+       where active = false
+         and (filled_block is not null or cancelled_block is not null)
+         and updated_at < $1`,
+      [cutoff],
+    );
+
+    const series = await this.pool.query(
+      `delete from series s
+       where s.settled = true
+         and s.updated_at < $1
+         and not exists (
+           select 1
+           from market_listings ml
+           where ml.chain_id = s.chain_id
+             and ml.active = true
+             and (
+               (
+                 ml.factory_address is not null
+                 and ml.factory_address = s.factory_address
+                 and ml.series_id = s.series_id
+               )
+               or ml.token = s.stable_token
+               or ml.token = s.up_token
+             )
+         )`,
+      [cutoff],
+    );
+
+    const indexedLogs = await this.pool.query(
+      `with cutoffs as (
+         select chain_id, last_seen_block - $1::bigint as cutoff_block
+         from chains
+         where last_seen_block is not null
+           and last_seen_block > $1::bigint
+       )
+       delete from indexed_logs logs
+       using cutoffs
+       where logs.chain_id = cutoffs.chain_id
+         and logs.block_number < cutoffs.cutoff_block`,
+      [bigintText(options.indexedLogRetentionBlocks)],
+    );
+
+    return {
+      bridgeRequestsDeleted: deletedCount(bridgeRequests),
+      marketListingsDeleted: deletedCount(marketListings),
+      seriesDeleted: deletedCount(series),
+      indexedLogsDeleted: deletedCount(indexedLogs),
+    };
   }
 
   async marketSummary(chainId?: number, seriesId?: Hex): Promise<{ seriesCount: number; listingCount: number; activeListingCount: number; fillAttemptCount: number }> {
